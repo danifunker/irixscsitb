@@ -55,6 +55,31 @@ Options: `-i` interrogate, `-l` list CDs, `-s` list `/shared`, `-c N` switch CD,
 `-g N` get file N, `-p FILE` put file, `-o DIR` output dir, `-d 0|1` debug,
 `-v` verbose.
 
+## Packaging & release
+
+The binary is distributed inside SGI EFS images built by **rb-cli**
+(github.com/danifunker/rusty-backup), so the IRIS emulator can mount them.
+`scripts/package-efs.sh` wraps the verified rb-cli command sequence and produces
+two artifacts from a built binary:
+
+- **EFS CD image** — `rb-cli new --fs efs IMG` + `put IMG …` → a bare EFS
+  superfloppy served as the emulated CD-ROM (`mount -t efs`).
+- **SGI EFS HDD image** — `rb-cli new-sgi-hdd IMG --heads 16 --sectors 63` +
+  `put IMG@1 …` → a dvh volume-header + EFS-root disk (geometry 16×63 matches the
+  IRIS emulator). The EFS root is partition **`@1`**. Needs an rb-cli build with
+  the `new-sgi-hdd` verb.
+
+```sh
+scripts/package-efs.sh --bin bstoolbox-o32 --version 2026-06-17 \
+  --rb-cli ./rb-cli --extra README.md
+```
+
+The script `fsck`s and round-trip-verifies both images. `.github/workflows/release.yml`
+runs the full pipeline (cross-compile → fetch rb-cli → package → GitHub release).
+**It requires the repo variable `IRIX_TOOLCHAIN_IMAGE`** — a container with a
+mips-sgi-irix gcc + IRIX sysroot — because CI cannot compile `irix.c` without the
+proprietary SGI headers/libs. (`IRIX_CC` overrides the compiler name.)
+
 ## IRIX 5.3 → 6.5 portability (important)
 
 The dev machine is macOS and has no IRIX headers, so `irix.c` cannot be compiled

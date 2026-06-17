@@ -1,0 +1,128 @@
+name: Release
+
+# Builds the IRIX bstoolbox binaries, packages them into EFS images with rb-cli
+# (rusty-backup), and publishes a GitHub release with everything attached.
+#
+# Artifacts produced:
+#   bstoolbox-o32            IRIX o32/mips2 binary (runs on IRIX 5.3 - 6.5)
+#   bstoolbox-n32            IRIX n32/mips3 binary (IRIX 6.x, faster)
+#   bstoolbox-efs-cd-*.img   bare EFS image  -> IRIS emulated CD-ROM (mount -t efs)
+#   bstoolbox-sgi-hdd-*.img  dvh + EFS HDD   -> IRIS emulated SCSI hard disk
+#
+# REQUIRED SETUP (the one external dependency):
+#   The IRIX binary needs a MIPS cross-gcc *and* an IRIX sysroot (proprietary SGI
+#   headers/libs: sys/dsreq.h, invent.h, libc). Provide both as a container image
+#   and set the repo variable IRIX_TOOLCHAIN_IMAGE (Settings > Variables), or pass
+#   the `irix_toolchain_image` input when dispatching. Optionally set IRIX_CC
+#   (default mips-sgi-irix6.5-gcc) if the cross-compiler is named differently.
+
+on:
+  workflow_dispatch:
+    inputs:
+      irix_toolchain_image:
+        description: "Container image with a mips-sgi-irix gcc + IRIX sysroot (overrides the IRIX_TOOLCHAIN_IMAGE variable)"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(date -u +%Y-%m-%d-%H-%M)" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-irix:
+    needs: version
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ github.event.inputs.irix_toolchain_image || vars.IRIX_TOOLCHAIN_IMAGE }}
+    env:
+      IRIX_CC: ${{ vars.IRIX_CC || 'mips-sgi-irix6.5-gcc' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cross-compile o32 (5.3-6.5) and n32 (6.x)
+        run: |
+          set -eux
+          # o32 ABI: one binary that runs across IRIX 5.3 - 6.5.
+          "$IRIX_CC" -DOS_IRIX -O2 -mabi=32 -mips2 -o bstoolbox-o32 bstoolbox.c irix.c
+          # n32 ABI: faster, IRIX 6.x only. Drop this line if the toolchain has no
+          # n32 multilib.
+          "$IRIX_CC" -DOS_IRIX -O2 -mabi=n32 -mips3 -o bstoolbox-n32 bstoolbox.c irix.c
+          file bstoolbox-o32 bstoolbox-n32 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: irix-binaries
+          path: |
+            bstoolbox-o32
+            bstoolbox-n32
+
+  package:
+    needs: [version, build-irix]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: irix-binaries
+      - name: Fetch latest rb-cli (linux-x64)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          url=$(gh api repos/danifunker/rusty-backup/releases/latest \
+            --jq '.assets[] | select(.name|test("^rb-cli-linux-x64-.*\\.tar\\.gz$")) | .browser_download_url')
+          curl -fsSL "$url" -o rb-cli.tar.gz
+          tar xzf rb-cli.tar.gz
+          chmod +x rb-cli
+          ./rb-cli --version
+      - name: Build EFS CD + SGI HDD images
+        run: |
+          set -eux
+          # Package the o32 binary (the portable 5.3-6.5 build) into both images.
+          ./scripts/package-efs.sh \
+            --bin bstoolbox-o32 \
+            --version "${{ needs.version.outputs.version }}" \
+            --outdir dist \
+            --rb-cli ./rb-cli \
+            --extra README.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: efs-images
+          path: dist/*.img
+
+  release:
+    needs: [version, build-irix, package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: irix-binaries
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: efs-images
+          path: dist
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          ls -la dist
+          gh release create "v${{ needs.version.outputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --title "bstoolbox ${{ needs.version.outputs.version }}" \
+            --notes "Automated release: IRIX o32/n32 binaries + EFS CD and SGI EFS HDD images for the IRIS emulator." \
+            dist/*

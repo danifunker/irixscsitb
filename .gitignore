@@ -1,3 +1,10 @@
+# Proprietary IRIX sysroot for the cross-toolchain image (never commit)
+docker/irix-toolchain/sysroot/
+docker/irix-toolchain/sysroot.tgz
+
+# Built EFS/HDD packaging output
+dist/
+
 # Prerequisites
 *.d
 
