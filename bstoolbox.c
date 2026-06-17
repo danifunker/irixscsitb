@@ -53,8 +53,9 @@ static int bluescsi_sendfile(int dev, char *path)
 		fprintf(stdout, "sendfile: %s\n", path);
 
 	memset(send_buf, 0, sizeof(send_buf));
-	//TODO Copnsider using basename()
-	// Extract base filename
+	/* Extract the base filename ourselves rather than via basename(3): POSIX
+	 * basename() may modify its argument and lives in <libgen.h>, whose
+	 * availability varies across the IRIX 5.3-6.5 range we target. */
 	base_name = strrchr(path, '/');
 	if (base_name == NULL) {
 		base_name = path;
@@ -79,7 +80,7 @@ static int bluescsi_sendfile(int dev, char *path)
 
 	if (stat(path, &st) == 0) {
 		if (verbose)
-			printf("File size of %s is %lld bytes\n", filename, (long long)st.st_size);
+			printf("File size of %s is %ld bytes\n", filename, (long)st.st_size);
 	} else {
 		fprintf(stderr, "Error: sendfile couldn't stat %s\n", path);
 		fclose(fd);
@@ -420,6 +421,8 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 	char *filename;
 	size_t bytes_written;
 	size_t bytes_left;
+	long int filesize;
+	long int max_blocks;
 	int blk_idx = 0;
 
 
@@ -461,10 +464,21 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 	bytes_written = 0;
 	bytes_left = 0;
 
-	//Read the data from the SCSI bus and store to disk 
-	//TODO timeouts and sanity checks
+	/* Bound the loop so a wrong/garbage size can't spin forever: a file of
+	 * filesize bytes needs at most ceil(filesize / MAX_DATA_LEN) blocks; allow
+	 * one extra as slack. */
+	filesize = size_to_long (files[idx].size);
+	max_blocks = (filesize / MAX_DATA_LEN) + 2;
+
+	//Read the data from the SCSI bus and store to disk
 	while (1)
-	{	
+	{
+		if ((long int)blk_idx > max_blocks)
+		{
+			fprintf (stderr, "Error: getfile transfer exceeded expected size (%ld bytes), aborting\n", filesize);
+			fclose (fd);
+			return -1;
+		}
 		if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, MAX_DATA_LEN) != 0)
 		{
 			fprintf (stderr, "Error: getfile failed during transfer - %s\n", strerror(errno));
@@ -472,7 +486,7 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 			return -1;
 		}
 
-		bytes_left = size_to_long (files[idx].size) - bytes_written;
+		bytes_left = filesize - bytes_written;
 		if (verbose)
 			fprintf (stdout, "Bytes left: %li\n", bytes_left);
 		if (bytes_left <= 0)
@@ -531,12 +545,70 @@ static int bluescsi_listdevices(int dev, char **outbuf)
 		return -1;
 }
 
+/*
+ * Identifiers we accept as a toolbox-capable target. Matched (case-sensitive
+ * substring) against the INQUIRY identity AND the MODE SENSE page 0x31 content:
+ *   "BlueSCSI"       - real BlueSCSI firmware appends "BlueSCSI<ver>" to
+ *                      product_rev and stamps it into the page 0x31 vendor page.
+ *   "IRIS EMUL DISK" - the IRIS emulator's INQUIRY product field (bytes 16-31);
+ *                      its full identity is vendor "SGI", product
+ *                      "IRIS EMUL DISK", revision "1.0".
+ * Add new entries here to extend acceptance.
+ */
+static const char *toolbox_accept_ids[] = { "BlueSCSI", "IRIS EMUL DISK" };
+#define N_ACCEPT_IDS (int)(sizeof(toolbox_accept_ids) / sizeof(toolbox_accept_ids[0]))
+
+/* Substring search that tolerates embedded NULs (MODE SENSE data and the
+ * vendor page both contain 0x00 bytes, so strstr() would stop early). */
+static int buf_contains(const unsigned char *hay, int haylen, const char *needle)
+{
+	int n = (int)strlen(needle);
+	int i;
+
+	if (n == 0)
+		return 1;
+	for (i = 0; i + n <= haylen; i++)
+		if (memcmp(hay + i, needle, n) == 0)
+			return 1;
+	return 0;
+}
+
+/*
+ * Authoritative toolbox-capability check: MODE SENSE(6) for the BlueSCSI
+ * vendor page 0x31 and look for an accepted magic string. This is how the IRIS
+ * emulator (whose INQUIRY is a plain SGI disk) advertises toolbox support, and
+ * how a real BlueSCSI advertises it via the "BlueSCSIVendorPage".
+ * Returns 0 if an accepted id is present in the page, -1 otherwise.
+ */
+static int bluescsi_modesense_toolbox(int dev)
+{
+	unsigned char cmd[6];
+	unsigned char buf[96];
+	int i;
+
+	memset(cmd, 0, sizeof(cmd));
+	cmd[0] = SCSI_MODE_SENSE_6;
+	cmd[1] = 0x08;                  /* DBD: suppress block descriptors */
+	cmd[2] = BLUESCSI_VENDOR_PAGE;  /* PC=current, page code 0x31 */
+	cmd[4] = sizeof(buf);           /* allocation length */
+
+	memset(buf, 0, sizeof(buf));
+	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
+		return -1;              /* page unsupported or command failed */
+
+	for (i = 0; i < N_ACCEPT_IDS; i++)
+		if (buf_contains(buf, sizeof(buf), toolbox_accept_ids[i]))
+			return 0;
+	return -1;
+}
+
 //Interrogate the device and find out it's capabilties
 static int bluescsi_inquiry(int dev, int print)
 {
-	char cmd[] ={SCSI_INQUIRY, 0, 0, 0, sizeof(scsi_inquiry), 0};	
+	char cmd[] ={SCSI_INQUIRY, 0, 0, 0, sizeof(scsi_inquiry), 0};
 	char buf[sizeof(scsi_inquiry)];
-	const char *BlueSCSI_ID = "BlueSCSI";
+	char identity[64];
+	int accepted = 0;
 	scsi_inquiry inq;
 	int i;
 	char* dev_flags;
@@ -554,11 +626,11 @@ static int bluescsi_inquiry(int dev, int print)
 	memset (&inq, 0, sizeof(scsi_inquiry));
 	memcpy (&inq.version, &buf[2], 1);
 	memcpy (&inq.vendor_id, &buf[8], sizeof(inq.vendor_id) - 1);
-	inq.vendor_id[9] = '\0';
+	inq.vendor_id[sizeof(inq.vendor_id) - 1] = '\0';
 	memcpy (&inq.product_id, &buf[16], sizeof(inq.product_id) - 1);
-	inq.product_id[17] = '\0';
+	inq.product_id[sizeof(inq.product_id) - 1] = '\0';
 	memcpy (&inq.product_rev, &buf[32], sizeof(inq.product_rev) - 1);
-	inq.product_rev[32] = '\0';
+	inq.product_rev[sizeof(inq.product_rev) - 1] = '\0';
 
 	if (verbose || print)
 	{
@@ -585,36 +657,66 @@ static int bluescsi_inquiry(int dev, int print)
 		fprintf(stdout, "Toolbox API version: not available (length mismatch)\n");
 	}
 
-	//Get the 8 byte device flags to see what type it is
+	/*
+	 * Decide whether this is a toolbox-capable target. Accept on EITHER:
+	 *  1. the INQUIRY identity (vendor + product + revision) containing an
+	 *     accepted id - real BlueSCSI stamps "BlueSCSI<ver>" into product_rev,
+	 *     and the IRIS emulator's product field reads "IRIS EMUL DISK"; or
+	 *  2. the MODE SENSE page 0x31 vendor page carrying the toolbox magic.
+	 * The INQUIRY check runs first so a recognised device never has to issue
+	 * the (potentially CHECK CONDITION) page 0x31 probe.
+	 */
+	memset(identity, 0, sizeof(identity));
+	strncpy(identity, inq.vendor_id, sizeof(identity) - 1);
+	strncat(identity, " ", sizeof(identity) - strlen(identity) - 1);
+	strncat(identity, inq.product_id, sizeof(identity) - strlen(identity) - 1);
+	strncat(identity, " ", sizeof(identity) - strlen(identity) - 1);
+	strncat(identity, inq.product_rev, sizeof(identity) - strlen(identity) - 1);
+
+	for (i = 0; i < N_ACCEPT_IDS; i++) {
+		if (strstr(identity, toolbox_accept_ids[i]) != NULL) {
+			accepted = 1;
+			if (verbose)
+				fprintf(stdout, "Accepted via INQUIRY identifier '%s'\n", toolbox_accept_ids[i]);
+			break;
+		}
+	}
+
+	if (!accepted && bluescsi_modesense_toolbox(dev) == 0) {
+		accepted = 1;
+		if (verbose)
+			fprintf(stdout, "Accepted via MODE SENSE page 0x31 toolbox magic\n");
+	}
+
+	if (!accepted) {
+		fprintf(stderr, "Error: '%s' is not a recognised BlueSCSI/IRIS toolbox target\n", identity);
+		return 1;
+	}
+
+	/*
+	 * Accepted. Fetch the 8-byte device-type map (0xD9) used to gate CD
+	 * operations. This is informational - a failure here is non-fatal so that
+	 * shared-directory operations still work even if the map is unavailable.
+	 */
 	if (bluescsi_listdevices(dev, &dev_flags) == 0) {
 		if (verbose)
 			fprintf (stdout, "Device flags: ");
 		for (i = 0; i < 8; i++)
 		{
-			device_list[i] = dev_flags[i]; //Write the falgs to the device list
+			device_list[i] = dev_flags[i]; //Write the flags to the device list
 			if (verbose)
 				fprintf (stdout,"%02x ", (unsigned char) dev_flags[i]);
 		}
 		if (verbose)
 			fprintf(stdout, "\n");
 		free(dev_flags);
-
-
 	}
 	else {
-		fprintf (stderr, "Failed to fetch device flags with bluescsi_listdevices(): %s\n", strerror(errno));
+		fprintf (stderr, "Warning: couldn't fetch device-type map (0xD9): %s\n", strerror(errno));
 		free(dev_flags);
-		return 1;
 	}
 
-	//TODO Once a BlueSCSI drive is found, send a MODE SENSE 0x1A command for page 0x31. Validate it against the BlueSCSIVendorPage (see: mode.c)
-	if (strstr (inq.product_rev, BlueSCSI_ID) != NULL)
-		return 0; //TODO FIX FIX FIX HDD 
-	else
-	{
-		fprintf (stderr, "Error: didn't find ID %s in product_rev\n", BlueSCSI_ID);
-		return 1;
-	}
+	return 0;
 }
 
 static void do_drive(char *path, int list, int verbose, int cd_img, int file, char *outdir)
@@ -624,8 +726,10 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 	int readonly; //Needed to determine if it's a CDROM and only able to be opened READONLY
 	readonly = 0;
 	
-	//Open the device read only if we are attempting a CD operation
-	if (list == MODE_CD || cd_img != NOT_ACTIVE) //TODO Probably need to detect more modes here
+	/* CD targets are emulated read-only, so list-CDs and change-CD must open
+	 * read-only; everything else (shared dir, inquiry, debug) opens read-write
+	 * and falls back to read-only below if the open is refused. */
+	if (list == MODE_CD || cd_img != NOT_ACTIVE)
 	       readonly = 1;
 
 	dev = scsi_open(path, readonly);

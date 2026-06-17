@@ -1,0 +1,208 @@
+# BlueSCSI detection & toolbox protocol (host ⇄ device)
+
+This documents exactly what `bstoolbox` (the host tool in this repo) sends and
+what it expects back, so the **IRIS emulator** can present a SCSI target that
+`bstoolbox` recognises as a BlueSCSI and drives correctly.
+
+All multi-byte SCSI fields are **big-endian**. The host's view of the protocol
+lives in `bstoolbox.c`; opcodes in `bstoolbox.h`. Cross-checked against BlueSCSI
+firmware `src/BlueSCSI_Toolbox.cpp` and `lib/SCSI2SD/src/firmware/inquiry.c`.
+
+## 1. How the host decides "this is a toolbox target"
+
+`do_drive()` calls `bluescsi_inquiry()` before *any* operation. If it returns
+non-zero, the tool prints an error and exits. A device is **accepted if EITHER**
+of the following matches (`bstoolbox.c`, `toolbox_accept_ids[] = {"BlueSCSI",
+"IRIS EMUL DISK"}`):
+
+1. **INQUIRY identity** (§1a) contains an accepted id, **or**
+2. **MODE SENSE page 0x31** (§1b) carries the toolbox magic.
+
+There is also a soft API-version check (§1c). The `0xD9` device-type map is
+fetched after acceptance and is **non-fatal** (§1d).
+
+### 1a. INQUIRY identity match
+
+Host sends a 6-byte `INQUIRY` (`12 00 00 00 42 00`, allocation length 66) and
+parses: `vendor_id = buf[8..15]`, `product_id = buf[16..31]`,
+`product_rev = buf[32..63]`. It builds the string `"<vendor> <product> <rev>"`
+and accepts if any `toolbox_accept_ids[]` entry is a substring:
+
+- **Real BlueSCSI** appends `"BlueSCSI<ver>"` into `product_rev` (bytes 36+), so
+  `"BlueSCSI"` matches.
+- **IRIS emulator** presents a native SGI hard-disk identity — **vendor `SGI`,
+  product `IRIS EMUL DISK` (bytes 16–31), revision `1.0`** — so `"IRIS EMUL
+  DISK"` matches. (The IRIS CD-ROM masquerades as a Sony `CDU-76S`; CD identity
+  is not used for acceptance, only the `0xD9` map gates CD ops.)
+
+To add another accepted device, append its identifying substring to
+`toolbox_accept_ids[]`.
+
+### 1b. MODE SENSE page 0x31 (authoritative toolbox magic)
+
+If the INQUIRY identity doesn't match, the host sends `MODE SENSE(6)` for the
+BlueSCSI vendor page `0x31` and scans the whole reply (NUL-tolerant) for any
+accepted id:
+
+```
+1A 08 31 00 60 00        # MODE SENSE(6), DBD=1 (no block descriptors),
+                         # page 0x31, allocation length 0x60
+```
+
+The firmware emits this page **only when toolbox mode is enabled**
+(`mode.c`: `scsiToolboxEnabled() && pageCode==0x31`). The page is:
+
+```
+0x31, 42,                                 # page code, page length (0x2A)
+"BlueSCSI is the BEST STOLEN FROM BLUESCSI\0"   # 42 bytes of magic
+```
+
+So a device is accepted here if its page 0x31 content contains `"BlueSCSI"`.
+**This is how IRIS signals toolbox capability** — emit page 0x31 with the magic
+above (the host matches the `"BlueSCSI"` substring), in addition to (or instead
+of) the INQUIRY `IRIS EMUL DISK` identity.
+
+### 1c. Toolbox API version byte (soft — warns only)
+
+```c
+additional_len     = buf[4];
+toolbox_api_version = buf[additional_len + 4];   /* last valid byte */
+if (toolbox_api_version < BLUESCSI_TOOLBOX_API_VER /*=1*/) { warn; /* no fail */ }
+```
+
+Real firmware returns `0` (`< 1`), so the host warns and continues — never a
+failure. For a plain SGI INQUIRY (IRIS) this byte is just whatever lands at that
+offset; harmless.
+
+### 1d. `0xD9` device-type map (non-fatal)
+
+After acceptance the host calls `bluescsi_listdevices()` (`0xD9`) to populate
+`device_list[]`, used to gate CD operations (§2.4). A failure here only warns —
+shared-directory operations still work. (IRIS's `0xD9` already returns its 8
+bytes, so this succeeds for IRIS.)
+
+### Exact INQUIRY layout to emulate (BlueSCSI-style, optional for IRIS)
+
+> IRIS does **not** need this appended-name form — its native `SGI` /
+> `IRIS EMUL DISK` identity plus page 0x31 is enough. This describes how *real
+> BlueSCSI* builds its INQUIRY, for reference.
+
+Mirror what the firmware builds (`s2s_getStandardInquiry`). For a hard disk
+target whose firmware name string is `NAME` (e.g. `"BlueSCSI Picov2026.04.28"`,
+length `L`):
+
+```
+off  val          meaning
+0    0x00         peripheral device type (0x00 = direct-access/HDD; 0x05 = CD-ROM)
+1    0x00         RMB/modifier (set 0x80 for removable)
+2    0x02         ANSI version = SCSI-2
+3    0x01/0x02    response data format
+4    0x1F+L+1     ADDITIONAL LENGTH  (so total length = 5 + this)
+5    0x00
+6    0x00
+7    0x18         flags (sync + linked cmds)
+8   ..15          vendor id, 8 bytes, space-padded   (any value, e.g. "QUANTUM ")
+16  ..31          product id, 16 bytes, space-padded (any value)
+32  ..35          product revision, 4 bytes          (any value, e.g. "1.0 ")
+36  ..36+L-1      NAME string, must start with/contain "BlueSCSI"   <-- detection
+36+L             TOOLBOX API VERSION byte (0 = like hardware)       <-- last byte
+```
+
+Total returned length = `36 + L + 1`. With `buf[4] = 0x1F + L + 1`, the host's
+`buf[buf[4]+4]` lands exactly on the API byte. Simplest correct emulator: return
+the standard 36 bytes, append `"BlueSCSI"` + your version string, append one API
+byte, and set `buf[4]` accordingly.
+
+Minimal valid example (`NAME = "BlueSCSI"`, L=8, API=0): 45-byte reply,
+`buf[4] = 0x1F + 8 + 1 = 0x28`, `buf[36..43] = "BlueSCSI"`, `buf[44] = 0x00`.
+
+## 2. Toolbox vendor commands the host uses
+
+All are 10-byte CDBs. "Data-in" = device → host; "data-out" = host → device.
+
+| Op | Name | CDB fields the host sets | Data the host expects |
+|----|------|--------------------------|-----------------------|
+| `0xD2` | COUNT_FILES | — | 1 byte: file count in `/shared` (≤100) |
+| `0xD0` | LIST_FILES | — | `count` × 40-byte `ToolboxFileEntry` (data-in) |
+| `0xD1` | GET_FILE | `[1]`=index, `[2..5]`=4096-byte block offset | up to 4096 bytes per call (data-in) |
+| `0xD3` | SEND_FILE_PREP | — | host sends 33-byte filename (data-out) |
+| `0xD4` | SEND_FILE_10 | `[1..2]`=byte count, `[3..5]`=block number | host sends `count` data bytes (data-out) |
+| `0xD5` | SEND_FILE_END | — | none |
+| `0xD6` | TOGGLE_DEBUG | `[1]`=0 set/`[2]`=val, `[1]`=1 get | get returns 1 byte (data-in) |
+| `0xD7` | LIST_CDS | — | `count` × 40-byte `ToolboxFileEntry` (data-in) |
+| `0xD8` | SET_NEXT_CD | `[1]`=image index | none |
+| `0xD9` | LIST_DEVICES (metadata) | `[1]`=0 (subcmd) | 8 bytes of device types (data-in) |
+| `0xDA` | COUNT_CDS | — | 1 byte: CD image count (≤100) |
+
+### 2.1 `ToolboxFileEntry` (40 bytes, used by LIST_FILES / LIST_CDS)
+
+```
+byte 0      index       (file index in directory)
+byte 1      type        (0 = file, 1 = directory)
+byte 2..34  name        (32 bytes; host treats as NUL-terminated, truncates to 32)
+byte 35..39 size        (40-bit big-endian unsigned byte count)
+```
+
+Host reads `count` from COUNT_FILES/COUNT_CDS first, then sizes its receive
+buffer to `count * 40` for the LIST call. Return entries packed back-to-back.
+
+### 2.2 GET_FILE (`0xD1`)
+
+Host loops: `CDB[1]`=file index, `CDB[2..5]`=block offset counted in **4096-byte
+blocks**, big-endian. Device returns up to 4096 bytes (data-in) per call. Host
+stops when it has written `size` bytes (from the file's `ToolboxFileEntry`), so
+the device just needs to serve the requested 4096-byte window.
+
+### 2.3 SEND_FILE (PUT) — `0xD3` → `0xD4`… → `0xD5`
+
+1. **PREP `0xD3`** — host sends a 33-byte (NUL-terminated, ≤32 chars) filename in
+   data-out. Device creates/truncates that file in the shared dir. On failure,
+   return CHECK CONDITION / ILLEGAL_REQUEST.
+2. **SEND_FILE_10 `0xD4`** (repeated) — `CDB[1..2]` = number of bytes in this
+   request (big-endian, 1..512 as the host sends it), `CDB[3..5]` = **block
+   number** (0,1,2,…), big-endian. Host then sends that many data bytes
+   (data-out). Place them at file offset `block_number * 512`.
+   - **Emulator note:** seek **absolutely** to `block_number * 512` and write.
+     Verified against local firmware `v2026.04.27-7-g61ddd31d`: `onSendFile10`
+     does `gFile.seekCur(offset * 512)` (a *relative* seek), which corrupts
+     multi-block writes — implement absolute seek to match the documented intent.
+   - The host sends 512 bytes per block except the final (short) block.
+3. **END `0xD5`** — close/flush the file.
+
+### 2.4 LIST_DEVICES (`0xD9`) — required for detection
+
+Host sends `D9 00 00 …` (`CDB[1]`=0 = LIST_DEVICES subcommand) and reads **8
+bytes**, one per SCSI ID 0–7. Each byte is the device type:
+
+```
+0x00 HDD   0x01 removable   0x02 CD   0x03 floppy   0x04 MO   0x05 sequential
+0xFF = target not enabled
+```
+
+The host stores these in `device_list[]` and uses them to gate CD operations
+(`-l`, `-c`) — those require the target's byte to be `0x02` (CD). It is fetched
+after acceptance and a failure is non-fatal, so it is no longer required for
+detection, but you should still implement it for CD support.
+
+## 3. Minimum the emulator must implement to be useful
+
+- **Acceptance:** present vendor `SGI` / product `IRIS EMUL DISK` in INQUIRY
+  (§1a) **and/or** emit MODE SENSE page 0x31 with the `"BlueSCSI"` magic (§1b).
+  Either one is sufficient; doing both is most robust.
+- **`0xD9`** returning 8 device-type bytes (gates CD ops; non-fatal for detection).
+- For `-s`/`-g` (read from shared): `0xD2` COUNT_FILES, `0xD0` LIST_FILES,
+  `0xD1` GET_FILE.
+- For `-p` (write to shared): `0xD3`/`0xD4`/`0xD5`.
+- For `-l`/`-c` (CDs): `0xDA` COUNT_CDS, `0xD7` LIST_CDS, `0xD8` SET_NEXT_CD,
+  and report `0x02` for that ID in `0xD9`.
+- `0xD6` TOGGLE_DEBUG is only exercised with `-i -v` / `-d`; nice to have.
+
+## 4. Transport notes (IRIX vs Linux)
+
+The host issues these CDBs via `scsi_send_command` (data-in) and
+`scsi_send_commandw` (data-out). On IRIX that's `DS_ENTER` ioctls on
+`/dev/scsi/scNdMl0`; on Linux it's `SG_IO` on `/dev/sgN`. The emulator only
+needs to honour the SCSI-level CDB/data semantics above — it does not care which
+host transport is used. The host derives the target SCSI ID from the device path
+(`path_to_devnum`) and indexes `device_list[]` with it, so present device types
+on the IDs the emulator exposes.

@@ -13,9 +13,13 @@
 #include "os.h"
 
 extern int verbose;
-//Run when a CD is changed
-//TODO Is there a systemd way of doing this?
-int mediad_start(void) 
+/*
+ * mediad is an IRIX-only removable-media daemon that must be paused while a CD
+ * image is swapped. Linux has no direct equivalent (a desktop automounter would
+ * be distro-specific), so these are intentional no-op stubs - swapping CDs from
+ * Linux just doesn't coordinate with any host mounter.
+ */
+int mediad_start(void)
 {
 	fprintf(stderr, "mediad_start(): Not implemented on Linux\n");
     	return 1;
@@ -70,7 +74,11 @@ int scsi_send_command(int dev, unsigned char *cmd, int cmd_len, unsigned char *b
 	return 0;
 }
 
-//TODO Document this or just do it better
+/*
+ * Send a SCSI command that writes data TO the device (data-out, SG_DXFER_TO_DEV),
+ * e.g. the toolbox SEND_FILE sequence. With verbose enabled it also hexdumps the
+ * outgoing data buffer. Returns 0 on success, 1 on ioctl failure.
+ */
 int scsi_send_commandw(int dev, unsigned char *cmd, int cmd_len, unsigned char *buf, int buf_len)
 {
 	int i;

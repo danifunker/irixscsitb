@@ -10,6 +10,12 @@
 #include "os.h"
 
 #define SCSI_INQUIRY    0x12
+#define SCSI_MODE_SENSE_6 0x1A
+/* BlueSCSI advertises toolbox capability via MODE SENSE vendor page 0x31
+ * (the "BlueSCSIVendorPage"). This is the authoritative signal used to detect
+ * toolbox-capable targets - such as the IRIS emulator - that present a native
+ * (non-BlueSCSI) INQUIRY identity. */
+#define BLUESCSI_VENDOR_PAGE 0x31
 #define BLUESCSI_TOOLBOX_COUNT_FILES    0xD2
 #define BLUESCSI_TOOLBOX_MODE_FILES     0xD0
 #define BLUESCSI_TOOLBOX_GET_FILE       0xD1
@@ -27,7 +33,10 @@
 #define BLUESCSI_TOOLBOX_API_VER 1
 
 #define MAX_FILES 100
-#define MAX_DATA_LEN 4096 //TODO Document
+/* GET_FILE (0xD1) transfers the file in fixed blocks; the CDB offset field is
+ * counted in MAX_DATA_LEN-byte blocks and each reply returns up to this many
+ * bytes. Must match the firmware's toolbox block size (4096). */
+#define MAX_DATA_LEN 4096
 #define SEND_BUF_SIZE 512
 #define NAME_BUF_SIZE 33
 #define NOT_ACTIVE -1

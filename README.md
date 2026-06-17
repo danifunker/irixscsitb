@@ -5,7 +5,16 @@ Linux Mint
 
 NixOS
 
-IRIX 6.5 (writing to shared directory from host currently broken)
+IRIX 6.5
+
+This fork also targets IRIX 5.3 through 6.5 and supports the **IRIS emulator** in
+addition to real BlueSCSI hardware. Toolbox-capable targets are detected by their
+INQUIRY identity (`BlueSCSI`, or IRIS's `IRIS EMUL DISK`) or by the MODE SENSE
+page 0x31 vendor page. The IRIX host write path that made `-p` (put-to-shared)
+appear to hang has been reworked (pending end-to-end verification).
+
+For one binary that runs across IRIX 5.3–6.5, build with the o32 ABI:
+`make irix-o32`.
 
 **Treat this software as ALPHA, back up any important data before using it!**
 
