@@ -1,0 +1,34 @@
+# ci/iris-irix53.toml — IRIS machine config for the headless CI build of bstoolbox.
+#
+# Boots an ALREADY-INSTALLED IRIX 5.3 system disk and exposes a scratch SCSI
+# volume so scripts/iris-build.sh can push the source in and pull the compiled
+# o32 binary out (via the iris-ci control socket: boot / login / push / run / pull).
+#
+# RECOMMENDED BASE DISK: the "ULTRA64 2GIG SCSI IRIX 5.3" image — an installed
+# 5.3 system that already has the IDO developer option (cc / make / headers), so
+# `make` Just Works inside the guest. It's published as a .zip on archive.org;
+# download + unzip and point scsi.1.path at the resulting .chd (or drop it next
+# to wherever iris runs as `irix53.chd`). In CI: fetch the zip, unzip, set the
+# path. Paths here are relative to iris's working dir — use absolute paths if you
+# run iris from elsewhere.
+
+headless   = true                   # no window; --ci also renders offscreen
+no_audio   = true
+banks      = [128, 128, 0, 0]
+nvram      = "nvram-irix53-ci.bin"  # iris seeds a default on first run
+serial_log = "iris-ci-console.log"
+
+# The installed IRIX 5.3 boot disk (ULTRA64 ...IRIX53 .chd).
+[scsi.1]
+path  = "irix53.chd"
+cdrom = false
+
+# Scratch volume: host<->guest file transfer for iris-ci push/pull. iris
+# auto-creates the file (SGI volume header + payload). Guest sees it at
+# /dev/rdsk/dks0d2s0; scratch contents survive snapshot rollback.
+[scsi.2]
+path    = "iris-ci-scratch.raw"
+cdrom   = false
+overlay = false
+scratch = true
+size_mb = 64

@@ -11,7 +11,8 @@
 # thing runs headless.
 #
 # Prereqs:
-#   - iris + iris-ci built:  (cd ../iris && cargo build --release)
+#   - iris + iris-ci built with CHD support:
+#       (cd ../iris && cargo build --release --features chd)
 #   - an IRIX 5.3 (or 6.5) machine config with a `scratch = true` SCSI volume and
 #     the IDO dev option installed (provides cc/make + headers)
 #   - rb-cli with the new-sgi-hdd verb
