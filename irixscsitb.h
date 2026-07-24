@@ -87,7 +87,11 @@ typedef enum
 /* Highest valid device-type code; anything above it (bar TYPE_NONE) is junk. */
 #define TOOLBOX_DEVTYPE_MAX 0x07
 
-int device_list[8];
+/*
+ * Device-type map from the last successful TOOLBOX_LIST_DEVICES (0xD9), used to
+ * gate CD operations. Defined in toolbox.c.
+ */
+extern int device_list[8];
 
 /* Upper bound on device nodes reported by a bus scan (-b). */
 #define MAX_SCAN_DEVICES 64
@@ -116,13 +120,15 @@ enum {
 	DEBUG_GET
 };
 
-int verbose;
+/* Defined in toolbox.c; set from the CLI (-v) or the GUI. */
+extern int verbose;
 
 /*
  * -F: skip the INQUIRY/page-0x31 identity check and test the device by issuing
  * a real toolbox command instead. For firmware whose name we don't know yet.
+ * Defined in toolbox.c.
  */
-int force_toolbox;
+extern int force_toolbox;
 
 typedef struct {
 	unsigned char dev_type; /* Peripheral device type (bits 4-7), Peripheral qualifier (bits 0-3) */
@@ -143,6 +149,107 @@ typedef struct {
     unsigned char size[5]; /* byte 35-39: file size (40 bit big endian unsigned) */
 } ToolboxFileEntry;
 
-ToolboxFileEntry files[MAX_FILES];
-int files_count;
-/*char device_path[256]; */
+/* Longest "<vendor> <product> <rev>" identity string we build from INQUIRY. */
+#define TOOLBOX_IDENTITY_MAX 64
+
+/* Shown by the CLI's -version and the GUI's Help > About. */
+#define PROJECT_URL "https://github.com/danifunker/irixscsitb"
+
+/*
+ * Build identification (version.c). The generated version.h is included only by
+ * version.c, never here - putting it in this header would rebuild the whole
+ * tree every time the revision or timestamp changed.
+ */
+const char *build_revision(void);   /* git short rev, "-dirty" if modified */
+const char *build_stamp(void);      /* when the source was stamped (host) */
+const char *build_compiled(void);   /* when this object was compiled */
+const char *build_abi(void);        /* "o32 (mips2) - runs on IRIX 5.3 ..." */
+const char *build_libs(void);       /* OS + release the binary was linked on */
+
+/*
+ * Everything the two-stage detection learned about one target. Filled by
+ * toolbox_detect(); the CLI turns it into stdout text and the GUI turns it into
+ * widget state, so the detection itself never prints a result.
+ */
+typedef struct {
+	scsi_inquiry inq;
+	char identity[TOOLBOX_IDENTITY_MAX]; /* trimmed "<vendor> <product> <rev>" */
+	const char *claim_id;       /* firmware name that matched, or NULL */
+	int claimed_via_page31;     /* claim came from MODE SENSE page 0x31 */
+	int claims;                 /* stage 1 passed: device advertises toolbox */
+	int confirmed;              /* stage 2 passed: real 0xD9 answer */
+	int api_version;            /* Toolbox API version, or -1 if unavailable */
+	unsigned char devmap[8];    /* 0xD9 device-type map; valid when confirmed */
+} ToolboxDetect;
+
+/* One row of a bus scan (-b): what a single device node reported. */
+typedef struct {
+	char path[SCSI_PATH_MAX];
+	char identity[TOOLBOX_IDENTITY_MAX];
+	const char *type_name;      /* INQUIRY peripheral device type, printable */
+	int claims;
+	int confirmed;
+} ToolboxScanEntry;
+
+/*
+ * Core toolbox API (toolbox.c). Everything here returns data or a status and
+ * prints only errors/verbose diagnostics to stderr - never a result - so the
+ * CLI and the Motif GUI can share it. Presentation lives in the front ends.
+ */
+long int size_to_long(const unsigned char size[5]);
+const char *dev_type_name(int t);
+const char *inquiry_pdt_name(unsigned char b0);
+
+int toolbox_getdebug(int dev);
+int toolbox_setdebug(int dev, int value);
+int toolbox_countfiles(int dev);
+int toolbox_countcds(int dev);
+int toolbox_setnextcd(int dev, int num);
+int toolbox_sendfile(int dev, char *path);
+int toolbox_getfile(int dev, int idx, char *outdir);
+
+/*
+ * Fill entries[] with at most max file/CD records from the target. Return the
+ * number written, or -1 on failure.
+ */
+int toolbox_listfiles(int dev, ToolboxFileEntry *entries, int max);
+int toolbox_listcds(int dev, ToolboxFileEntry *entries, int max);
+
+/* Raw 8-byte device-type map (0xD9) into map[]. Returns 0 on success. */
+int toolbox_listdevices(int dev, unsigned char map[8]);
+
+/*
+ * toolbox_detect() outcomes. Distinguishing them is what lets each front end
+ * explain a rejection instead of just failing: "no answer at all" and "answered
+ * INQUIRY but never implemented 0xD9" need very different advice.
+ */
+#define TOOLBOX_OK             0
+#define TOOLBOX_ERR_INQUIRY   (-1)  /* INQUIRY itself failed */
+#define TOOLBOX_ERR_NO_CLAIM  (-2)  /* device does not advertise the toolbox */
+#define TOOLBOX_ERR_NO_ANSWER (-3)  /* claimed toolbox, but no valid 0xD9 reply */
+
+/*
+ * Two-stage detection, available whole or in halves.
+ *
+ * toolbox_identify() does the cheap half: INQUIRY, the trimmed identity string
+ * and the Toolbox API version. toolbox_qualify() does the rest - the firmware
+ * claim (INQUIRY name or MODE SENSE page 0x31) and the functional 0xD9
+ * confirmation - and is the only one that sends vendor opcodes. Splitting them
+ * lets a front end show who the device says it is before paying for the slower
+ * qualification; toolbox_detect() just runs both.
+ *
+ * All three fill *out regardless of outcome, so a caller can report *why* a
+ * device was rejected, and return TOOLBOX_OK only when out->confirmed is set.
+ * On success device_list[] is updated too.
+ */
+int toolbox_identify(int dev, ToolboxDetect *out);
+int toolbox_qualify(int dev, ToolboxDetect *out);
+int toolbox_detect(int dev, ToolboxDetect *out);
+
+/*
+ * Probe one generic SCSI node (open read-only, INQUIRY, claim, confirm) and
+ * fill *out. Returns 0 if it answered, -1 if it could not be opened or stayed
+ * silent. A bus scan is scsi_enum_devices() plus this in a loop - kept split so
+ * a front end can show each result as it arrives instead of only at the end.
+ */
+int toolbox_probe(const char *path, ToolboxScanEntry *out);

@@ -18,6 +18,39 @@ Download the files and run `make`; it produces an `irixscsitb` binary. Targets:
 | IRIX 6.5 | n32 build (`make irix-n32`) is faster, 6.x only |
 | Linux (Mint, NixOS, …) | `/dev/sgN` via `SG_IO` |
 
+## Motif GUI (IRIX)
+
+`make irix-gui-o32` builds `scsitbgui`, a native **IRIS IM (Motif)** front end,
+alongside the command-line tool. It opens with the SCSI bus already scanned and
+the toolbox-capable devices flagged, same as `irixscsitb -b`.
+
+It does everything the CLI does:
+
+| In the GUI | CLI equivalent |
+|---|---|
+| Upper pane — the SCSI bus, `[TOOLBOX]` flagged | `-b` |
+| Lower pane — **Shared files** / **CD images** | `-s` / `-l` |
+| **Get File…** (prompts for an output directory) | `-g` |
+| **Put File…** (file-selection dialog) | `-p` |
+| **Switch To CD** | `-c` |
+| Device ▸ **Interrogate…** | `-i` |
+| Device ▸ **Emulated Targets…** | `-t` |
+| Device ▸ **Show / Turn Debug On / Off** | `-D` / `-d` |
+| Device ▸ **Force detection** | `-F` |
+
+The operation buttons stay greyed out unless the selected device *proved* it
+implements the toolbox, and the dialogs tell you which detection stage a device
+failed rather than letting each command fail on its own.
+
+It is a separate binary on purpose — the CLI keeps no X dependency, so it still
+works on a headless machine or down a serial console. Both share the same
+protocol core, so anything one can do the other can.
+
+Built against the **Motif 1.2** API, which IRIX 5.3 ships and 6.5 still carries,
+so the o32 GUI binary runs across the whole 5.3 – 6.5 range just like the CLI.
+It picks up the SGI scheme (IndigoMagic and friends) when the host has schemes
+installed, and falls back to plain Motif when it doesn't.
+
 ## Firmware detection — no hardcoded product names
 
 A device is only driven as a toolbox target if it **proves** it is one:
@@ -102,7 +135,13 @@ Options:
         -d num  : set debug mode (0 = off, 1 = on)
         -D      : show current debug mode
         -F      : skip the identity check; test the device with a real toolbox command
+        -V      : show build revision/date and exit (also -version)
 ```
+
+`irixscsitb -version` (or `-V`, or Help > About in the GUI) reports the git
+revision the binary was built from, whether that tree was dirty, when it was
+stamped and compiled, the ABI, and which system's libraries it was linked
+against — so a binary found on a disk years later can still be traced back.
 
 Run as root — the generic SCSI nodes are root-owned. `irixscsitb` checks `geteuid()`
 and only warns about this when you are *not* root, so the reminder appears when

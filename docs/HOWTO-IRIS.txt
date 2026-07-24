@@ -1,0 +1,194 @@
+irixscsitb - build & test on IRIX 5.3 in the IRIS emulator
+===================================================
+
+This folder has everything needed to build irixscsitb natively on IRIX 5.3
+(o32/mips2, the ABI that runs across 5.3 - 6.5) and to test the new features.
+
+TWO binaries get built:
+  irixscsitb   the command-line tool. No X dependency - works headless and over
+               a serial console.
+  scsitbgui  a native IRIS IM (Motif) GUI. Optional: if it fails to build you
+               still get the CLI.
+
+Files:
+  irixscsitb.c   CLI front end (argument parsing + printing)
+  toolbox.c      the protocol core - all 0xD0-0xDA commands and detection
+  gui_motif.c    the Motif GUI front end
+  irix.c         IRIX SCSI transport
+  irixscsitb.h  os.h  Makefile                        <- headers + build
+  build.sh                                            <- run this inside IRIX
+  build/                                              <- created by build.sh
+
+Both front ends link the same toolbox.c, so anything one can do the other can.
+
+
+1. Get this folder into IRIX
+----------------------------
+Pick whichever is easier for your IRIS setup.
+
+A) IRIS built-in NFS (recommended - lets you edit on the Mac, rebuild in IRIX):
+   Point IRIS at this folder, e.g. launch with
+       --nfs-dir /Users/dani/Downloads/irixscsitb53
+   (or set [nfs] shared_dir to it in your TOML). Then inside IRIX, as root:
+       mkdir -p /mnt
+       mount 192.168.0.1:/ /mnt          # older clients: mount -o vers=2 ...
+       cd /mnt
+   The build output and logs will appear back in this folder on the Mac.
+
+B) Copy it onto the IRIX disk (no networking needed):
+   Get the folder in by whatever you already use (NFS once, ftp, or an image),
+   then:
+       cp -r /mnt /usr/people/root/irixscsitb53   # if it came in over NFS
+       cd /usr/people/root/irixscsitb53
+
+
+2. Build
+--------
+   ./build.sh              # or:  sh build.sh
+   # 'sh build.sh irix-n32' makes the faster 6.x-only n32 build instead.
+   # 'NOGUI=1 ./build.sh'  builds only the CLI, skipping the Motif GUI.
+
+It builds the CLI first, then the GUI. The GUI step is non-fatal on purpose: if
+Motif isn't installed, the script prints a WARN, skips it and still delivers the
+CLI. Look for these two lines near the end of the log:
+   OK: built irixscsitb (CLI)
+   OK: built scsitbgui (Motif GUI)
+
+IMPORTANT (why it copies to $HOME): getcwd(2) does NOT work inside the IRIS NFS
+mount on IRIX 5.3 - `pwd` and `make` both die with "getcwd (bu5)." if you build
+in place on the mount. So build.sh does all the work - copy sources, compile,
+log - in a stable LOCAL scratch dir in your home ($HOME/irixscsitb-build), then copies
+the finished binary and the log back into this (NFS) folder. Run it straight
+from the NFS mount.
+
+Output, copied into a build/ subfolder here (so it shows up on the Mac too, and
+stays out of the repo if the repo itself is the NFS share - build/ is gitignored):
+   build/irixscsitb          the CLI binary (also at $HOME/irixscsitb-build/)
+   build/scsitbgui         the Motif GUI binary, if it built
+   build/irixscsitb.tar.gz   packaged binaries (+README) - easy to distribute
+   build/build-<stamp>.log  full log of that build
+   build/build-latest.log   copy of the most recent log
+
+The tarball is produced by the Makefile ('make tar' packages irixscsitb+README
+into build/irixscsitb.tar.gz; needs gzip on PATH). build.sh runs it for you.
+
+Iterate: edit sources (on the Mac if using NFS), re-run ./build.sh, then
+   tail build/build-latest.log
+to see the newest build output. Each run wipes $HOME/irixscsitb-build first, so there
+are never stale object files. (Override the dir with BUILDDIR=$HOME/foo ./build.sh)
+
+Run the binary from local disk (most reliable):  cd $HOME/irixscsitb-build
+then ./irixscsitb ...  (the examples below).
+
+
+3. Test the new + existing features (run as root)
+-------------------------------------------------
+START HERE - scan the bus to find your device (NEW, needs no device path):
+   ./irixscsitb -b
+It probes every /dev/scsi node, sends INQUIRY, and prints what answered:
+   DEVICE                 TYPE     IDENTITY
+   /dev/scsi/sc0d1l0      Disk     SGI IRIS EMUL DISK 1.0
+   /dev/scsi/sc0d2l0      CD-ROM   SONY CD-ROM CDU-76S 1.0
+   /dev/scsi/sc0d3l0      Disk     QUANTUM ZuluSCSI 1.0 ...  [TOOLBOX]
+Use a [TOOLBOX] path for everything else.
+
+NOTE: the IRIS emulator is NOT toolbox-capable - verified in iris/src/scsi.rs,
+it implements no 0xD0-0xDA commands at all. It will show in the scan (it is a
+real SCSI device) but without [TOOLBOX], which is correct. Use -F to test any
+device directly if you think it should work.
+
+-b is the ONLY option that works without a device path; every other command
+needs one. Also, because IRIX getopt does not reorder arguments, options must
+come BEFORE the path:
+   RIGHT:  irixscsitb -t /dev/scsi/sc0d1l0
+   WRONG:  irixscsitb /dev/scsi/sc0d1l0 -t     (the -t is ignored)
+
+Note on device nodes: use the /dev/scsi/scNdNlN CHARACTER devices (the generic
+SCSI "ds" driver) - those are the pass-through nodes that carry the toolbox
+vendor commands. /dev/dsk/* (block) and /dev/rdsk/* (raw) are the disk driver's
+nodes and will NOT work for this tool.
+
+You can also list nodes by hand with:
+   ls -l /dev/scsi
+Paths look like /dev/scsi/sc0dNl0 where N is the SCSI ID.
+
+   ./irixscsitb -b                       NEW: scan the bus, list every device
+   ./irixscsitb -i /dev/scsi/sc0d1l0     detect + INQUIRY + API/debug info
+   ./irixscsitb -t /dev/scsi/sc0d1l0     NEW: device map, e.g.
+                                          Emulated SCSI targets:
+                                            ID 0: HDD
+                                            ID 1: CD
+                                            ...
+   ./irixscsitb -D /dev/scsi/sc0d1l0     NEW: prints "Debug mode: on/off"
+   ./irixscsitb -d 1 /dev/scsi/sc0d1l0   set debug on  (then -D to confirm)
+   ./irixscsitb -d 0 /dev/scsi/sc0d1l0   set debug off
+   ./irixscsitb -s /dev/scsi/sc0d1l0     list /shared  ( #idx name size )
+   ./irixscsitb -l /dev/scsi/sc0d1l0     NEW: richer CD listing, now
+                                          #idx name size bytes (dirs get a /)
+   ./irixscsitb -g 1 /dev/scsi/sc0d1l0   get file #1 from /shared
+   ./irixscsitb -p somefile /dev/scsi/sc0d1l0   put a file into /shared
+
+What "working" looks like for the three new bits:
+  -t : lists all 8 SCSI IDs by type instead of only showing raw hex under -i -v.
+  -D : reports current debug flag without needing a full -i interrogate.
+  -l : shows index + name + size (with a trailing / on directories) instead of
+       the old byte-by-byte dump that printed only index + name.
+
+Add -v to any command for verbose output if something doesn't behave.
+
+
+4. Test the Motif GUI (NEW)
+---------------------------
+The GUI needs an X display, so run it from an xwsh/winterm inside the IRIX
+desktop rather than from a serial console:
+
+   cd $HOME/irixscsitb-build
+   ./scsitbgui
+
+If DISPLAY isn't already set, or you want the window on the Mac instead:
+   DISPLAY=:0 ./scsitbgui              # the IRIX console display
+   DISPLAY=192.168.0.1:0 ./scsitbgui   # an X server on the Mac (XQuartz);
+                                         # needs 'xhost +' on the Mac side
+
+Run it as root for the same reason the CLI needs root - the /dev/scsi nodes are
+root-owned. If it comes up with an empty list and "0 device(s) answered", the
+status line will say so and point at root as the likely cause.
+
+What you should see: a window titled "SCSI Toolbox" with a File menu and a list
+already populated - the same rows `irixscsitb -b` prints, including the
+[TOOLBOX] marker on devices that answered 0xD9. File > Rescan Bus (or the
+Rescan button) re-probes.
+
+The window has three parts: the SCSI bus up top, a listing underneath that
+switches between "Shared files" and "CD images", and a status line at the bottom.
+
+What you can do (everything the CLI does):
+   Upper pane            the bus, with [TOOLBOX] on devices that answered 0xD9
+   Shared files / CDs    radio buttons switch what the lower list shows
+   Refresh               re-read the current listing
+   Get File...           fetch the selected file; prompts for an output dir
+   Put File...           send a local file into /shared (file browser)
+   Switch To CD          point the emulated CD drive at the selected image
+   Device > Interrogate  full INQUIRY + detection report
+   Device > Emulated Targets    the 8-ID device map
+   Device > Show/Turn Debug     read or set the firmware debug flag
+   Device > Force detection     the -F escape hatch, then rescans
+   File > Rescan Bus     re-probe every node
+
+The four buttons stay GREYED OUT until you select a device that actually proved
+it implements the toolbox. On IRIS they will stay greyed, because the emulator
+implements none of 0xD0-0xDA - that is correct, not a bug. Click Interrogate on
+it to see the reasoning spelled out.
+
+The window sizes itself to its contents: it measures the widest row it actually
+got and opens that wide, so the firmware name at the end of the identity string
+isn't clipped. Rows too wide for the pane scroll sideways.
+
+Things worth reporting back:
+  - does it build at all (the OK/WARN lines above)?
+  - does the window open the right width, with nothing clipped?
+  - does the bus list match `irixscsitb -b`?
+  - do the greyed-out buttons behave as described?
+  - does it look like an SGI app (IndigoMagic-ish) or like plain grey Motif?
+    Both are acceptable - the SGI look comes from schemes and is applied only
+    if this system has them - but which one you get is useful to know.
