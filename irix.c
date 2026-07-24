@@ -60,8 +60,36 @@ static void ms_sleep(long ms)
 	select(0, NULL, NULL, NULL, &tv);
 }
 
+/*
+ * Is a mediad daemon currently running?
+ *
+ * mediad enforces a single instance itself - start a second one and it prints
+ * "Another mediad is running. Only one is allowed at a time." and exits. That
+ * matters because /etc/init.d/mediad stop runs `mediad -k`, which only ASKS the
+ * daemon to exit; it then has to unmount whatever it had mounted before it
+ * actually goes. Restarting immediately races that shutdown, and the failure
+ * mode is nastier than it looks: the new mediad refuses to start, the old one
+ * then finishes exiting, and the system is left with NO mediad at all - so a
+ * newly-switched CD never gets mounted.
+ *
+ * ps(1) is /sbin/ps with a symlink at /usr/bin/ps, so run it unqualified and
+ * let PATH find it. `ps -e` prints the command NAME (not the full argv), so
+ * this cannot match the shell running the pipeline; grep -v grep drops the
+ * grep itself.
+ */
+static int mediad_running(void)
+{
+	return system("ps -e 2>/dev/null | grep mediad | grep -v grep >/dev/null 2>&1") == 0;
+}
+
 int mediad_start(void) {
     int status;
+
+    if (mediad_running()) {
+        if (verbose)
+            fprintf (stdout, "mediad is already running\n");
+        return 0;
+    }
 
     /* Starting mediad service */
     if (verbose)
@@ -71,21 +99,56 @@ int mediad_start(void) {
         fprintf(stderr, "Failed to start mediad service: %s\n", strerror(errno));
         return 1;
     }
+
+    /*
+     * The init script only starts mediad if `chkconfig mediad` is on, and says
+     * nothing when it isn't. Without this check the CD silently never remounts
+     * and there is no clue why.
+     */
+    if (!mediad_running()) {
+        fprintf(stderr, "Warning: mediad did not start. If removable media should be\n");
+        fprintf(stderr, "automounted, check 'chkconfig mediad' is on.\n");
+        return 1;
+    }
     return 0;
 }
 
 int mediad_stop(void) {
     int status;
+    int i;
+
+    if (!mediad_running()) {
+        if (verbose)
+            fprintf (stdout, "mediad is not running, nothing to stop\n");
+        return 0;
+    }
 
     /* Stop mediad service */
     if (verbose)
     	fprintf (stdout, "Stopping mediad...\n");
     status = system("/etc/init.d/mediad stop");
-    if (status != 0) {
-        fprintf(stderr, "Failed to stop mediad service: %s\n", strerror(errno));
-        return 1;
+    if (status != 0)
+        fprintf(stderr, "Warning: '/etc/init.d/mediad stop' returned an error\n");
+
+    /*
+     * Wait for it to actually be gone. `mediad -k` is asynchronous - it signals
+     * the daemon, which then unmounts its media before exiting - so returning
+     * here immediately is what caused "Another mediad is running" on the
+     * restart, and with it a CD that never remounted. Ten seconds is far longer
+     * than an unmount needs; we warn and carry on rather than hang forever.
+     */
+    for (i = 0; i < 100; i++) {
+        if (!mediad_running()) {
+            if (verbose)
+                fprintf (stdout, "mediad stopped\n");
+            return 0;
+        }
+        ms_sleep(100);
     }
-    return 0;
+
+    fprintf(stderr, "Warning: mediad still running 10s after being asked to stop.\n");
+    fprintf(stderr, "Continuing anyway; the CD may not remount by itself.\n");
+    return 1;
 }
 
 static int test_dsreq_flags(int dev_fd, uint flag)
@@ -94,8 +157,9 @@ static int test_dsreq_flags(int dev_fd, uint flag)
    int ret;
    ret = ioctl(dev_fd, DS_CONF, &config);
    if (verbose) {
-      fprintf (stdout, "dsc_iomax: %i\n", config.dsc_iomax);
-      fprintf (stdout, "dsc_biomax: %i\n", config.dsc_biomax);
+      /* dsc_iomax/dsc_biomax are ulong in <sys/dsreq.h>, not int. */
+      fprintf (stdout, "dsc_iomax: %lu\n", (unsigned long)config.dsc_iomax);
+      fprintf (stdout, "dsc_biomax: %lu\n", (unsigned long)config.dsc_biomax);
       fprintf (stdout, "SCSI Bus:%i Max Target:%i Max LUN:%i\n", config.dsc_bus, config.dsc_imax, config.dsc_lmax);
    }
    if (!ret) { /* no problem in ioctl */
@@ -335,6 +399,122 @@ int scsi_send_commandw(int dev, unsigned char *cmd, int cmd_len, unsigned char *
  * field is the SCSI target id, which indexes device_list[]. Returns the id
  * (0-7) or -1 if the path doesn't match or the id is out of range.
  */
+/*
+ * Pull BOTH the controller and the target id out of /dev/scsi/scNdNlN.
+ * path_to_devnum() below discards the controller, but the block-device names
+ * we have to match against (/dev/dsk/dks<c>d<id>s<n>) carry both.
+ */
+static int parse_scsi_path(const char *path, int *ctlr, int *id)
+{
+	if (strncmp(path, "/dev/scsi/sc", 12) != 0)
+		return -1;
+	if (sscanf(path, "/dev/scsi/sc%dd%dl%*d", ctlr, id) != 2)
+		return -1;
+	if (*id < 0 || *id > 7)
+		return -1;
+	return 0;
+}
+
+int media_find_mount(const char *path, char *mnt, int mntlen, char *dev, int devlen)
+{
+	FILE *fp;
+	char line[512];
+	char mdev[256];
+	char mpt[256];
+	char want[32];
+	int ctlr, id;
+
+	if (mnt != NULL && mntlen > 0)
+		mnt[0] = '\0';
+	if (dev != NULL && devlen > 0)
+		dev[0] = '\0';
+
+	if (parse_scsi_path(path, &ctlr, &id) != 0)
+		return -1;
+
+	/*
+	 * Block devices for this target are /dev/dsk/dks<c>d<id>s<n> (raw ones
+	 * /dev/rdsk/...). Match the stem so any partition of the same target
+	 * counts - it is the physical disc being swapped, not one slice of it.
+	 */
+	sprintf(want, "dks%dd%d", ctlr, id);
+
+	/* /etc/mtab: "device mountpoint fstype options freq passno". */
+	fp = fopen("/etc/mtab", "r");
+	if (fp == NULL)
+		return -1;
+
+	while (fgets(line, sizeof(line), fp) != NULL) {
+		if (sscanf(line, "%255s %255s", mdev, mpt) != 2)
+			continue;
+		if (strstr(mdev, want) == NULL)
+			continue;
+
+		if (mnt != NULL && mntlen > 0) {
+			strncpy(mnt, mpt, mntlen - 1);
+			mnt[mntlen - 1] = '\0';
+		}
+		if (dev != NULL && devlen > 0) {
+			strncpy(dev, mdev, devlen - 1);
+			dev[devlen - 1] = '\0';
+		}
+		fclose(fp);
+		return 1;
+	}
+	fclose(fp);
+	return 0;
+}
+
+int media_unmount(const char *mnt, char *why, int whylen)
+{
+	char cmd[640];
+	char tmp[64];
+	FILE *fp;
+	int n = 0;
+	int c;
+
+	if (why != NULL && whylen > 0)
+		why[0] = '\0';
+
+	sprintf(cmd, "umount %s 2>/dev/null", mnt);
+	if (system(cmd) == 0)
+		return 0;
+
+	/*
+	 * Still mounted. fuser(1M) names the processes holding it, which is the
+	 * whole difference between "try again in a second" and "you have a shell
+	 * sitting in /CDROM". -c asks about the mounted filesystem rather than
+	 * just the directory node. It writes the filename to stderr and the pids
+	 * to stdout, so both are captured.
+	 *
+	 * Via a temp file rather than popen(3): IRIX 5.3's <stdio.h> declares
+	 * popen only under _SVR4_SOURCE or _XOPEN_SOURCE, and nothing in the
+	 * default MIPSpro environment defines either - so a popen() call here
+	 * would compile on an implicit declaration and truncate its FILE* return
+	 * to an int. system()/fopen() carry no such condition.
+	 */
+	if (why == NULL || whylen < 2)
+		return -1;
+
+	sprintf(tmp, "/tmp/.irixscsitb.%d", (int)getpid());
+	sprintf(cmd, "fuser -c %s > %s 2>&1", mnt, tmp);
+	(void)system(cmd);      /* fuser's exit status is not meaningful here */
+
+	fp = fopen(tmp, "r");
+	if (fp != NULL) {
+		while (n < whylen - 1) {
+			c = fgetc(fp);
+			if (c == EOF)
+				break;
+			why[n++] = (char)c;
+		}
+		fclose(fp);
+	}
+	why[n] = '\0';
+	unlink(tmp);
+	return -1;
+}
+
 int path_to_devnum(const char *path) {
 	int dev_path_num;
 

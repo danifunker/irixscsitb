@@ -38,6 +38,11 @@ It does everything the CLI does:
 | Device ▸ **Show / Turn Debug On / Off** | `-D` / `-d` |
 | Device ▸ **Force detection** | `-F` |
 
+Switching a CD unmounts the old volume first — swapping the image under a live
+mount leaves the host with cached metadata for a disc that is gone, so the new
+disc never appears. If the volume is busy the switch is **refused** and you are
+told which processes hold it; `-f` (CLI) or "Switch Anyway" (GUI) overrides.
+
 The operation buttons stay greyed out unless the selected device *proved* it
 implements the toolbox, and the dialogs tell you which detection stage a device
 failed rather than letting each command fail on its own.

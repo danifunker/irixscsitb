@@ -237,7 +237,7 @@ static int cli_scanbus(void)
 	return found;
 }
 
-static void do_drive(char *path, int list, int verbose, int cd_img, int file, char *outdir)
+static void do_drive(char *path, int list, int verbose, int cd_img, int file, char *outdir, int force)
 {
 	int dev;
 	int dev_scsi_id; /* SCSI ID pulled from path */
@@ -322,7 +322,34 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 		else if (device_list[dev_scsi_id] != TYPE_CD)
 			fprintf (stderr, "Device doesn't seem to be a CD drive? Detected type %i on SCSI ID %i\n", device_list[dev_scsi_id], dev_scsi_id);
 		else
-			toolbox_setnextcd(dev, cd_img);
+		{
+			char mnt[SCSI_PATH_MAX];
+			char why[512];
+			int st;
+
+			/* mediad has already been stopped by main(); clear any
+			 * remaining mount before swapping the image out from
+			 * under it. */
+			st = toolbox_prepare_cd_swap(path, mnt, sizeof(mnt), why, sizeof(why));
+
+			if (st == CDSWAP_BUSY && !force)
+			{
+				fprintf (stderr, "Refusing to switch: %s is still mounted and could not be unmounted.\n", mnt);
+				if (why[0] != '\0')
+					fprintf (stderr, "Still in use by:\n%s", why);
+				fprintf (stderr, "Close whatever is using it (a shell sitting in the directory counts),\n");
+				fprintf (stderr, "then retry - or pass -f to switch anyway, which risks corrupting the\n");
+				fprintf (stderr, "mounted filesystem.\n");
+			}
+			else
+			{
+				if (st == CDSWAP_UNMOUNTED)
+					fprintf (stdout, "Unmounted %s before switching.\n", mnt);
+				else if (st == CDSWAP_BUSY)
+					fprintf (stderr, "WARNING: %s is still mounted; switching anyway (-f).\n", mnt);
+				toolbox_setnextcd(dev, cd_img);
+			}
+		}
 	}
 	else
 		fprintf (stderr, "No operation requested for %s. Try -i, -t, -s, or -h for help.\n", path);
@@ -369,6 +396,7 @@ static void usage(void)
 	fprintf(stderr, "\t-d num  : set debug mode (0 = off, 1 = on)\n");
 	fprintf(stderr, "\t-D      : show current debug mode\n");
 	fprintf(stderr, "\t-F      : skip the identity check; test the device with a real toolbox command\n");
+	fprintf(stderr, "\t-f      : force a CD switch even if the volume is still mounted (risky)\n");
 	fprintf(stderr, "\t-V      : show build revision/date and exit (also -version)\n");
 	/* Only nag about root when we actually aren't root. */
 	if (!running_as_root())
@@ -379,6 +407,7 @@ static void usage(void)
 int main(int argc, char *argv[])
 {
 	int c, cdimg = NOT_ACTIVE, list = 0, file = NOT_ACTIVE;
+	int force = 0;
 	char outdir[1024];
 
 	/* Must start empty: without -o or -p nothing else writes to it, and
@@ -398,7 +427,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	while ((c = getopt(argc, argv, "hvVlsitbDFc:d:g:o:p:")) != -1) switch (c) {
+	while ((c = getopt(argc, argv, "hvVlsitbDFfc:d:g:o:p:")) != -1) switch (c) {
 		case 'c':
 			cdimg = atoi(optarg);
 			break;
@@ -431,6 +460,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'F':
 			force_toolbox = 1;
+			break;
+		case 'f':
+			force = 1;
 			break;
 		case 'D':
 			list = MODE_DEBUG_GET;
@@ -477,7 +509,7 @@ int main(int argc, char *argv[])
 	} else if (argc > 1) {
 		fprintf(stderr, "WARNING: extra arguments after '%s' ignored - put options BEFORE the device path.\n", argv[0]);
 	}
-	do_drive(argv[0], list, verbose, cdimg, file, outdir);
+	do_drive(argv[0], list, verbose, cdimg, file, outdir, force);
 
 	if (cdimg != -1)
 		mediad_start ();

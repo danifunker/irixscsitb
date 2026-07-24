@@ -10,7 +10,7 @@ OBJS =
 BUILDDIR = build
 TARNAME  = irixscsitb.tar.gz
 
-.PHONY: default detect irix-o32 irix-n32 irix-gui-o32 irix-gui-n32 tar test gui-syntax clean FORCE
+.PHONY: default detect irix-o32 irix-n32 irix-gui-o32 irix-gui-n32 tar test irix-syntax gui-syntax clean FORCE
 
 # Two headers, because there are two different questions with two different
 # lifecycles. Neither is committed.
@@ -130,32 +130,38 @@ test: version.h buildhost.h
 	@echo "*** mock bus scan:"
 	@./tests/irixscsitb-mock -b
 
-# Syntax-check the Motif GUI against a REAL IRIX header tree without needing an
-# IRIX machine. gui_motif.c can't be compiled on the dev box - there is no
-# <Xm/Xm.h> - but pointed at a copy of an IRIX /usr/include it parses fine under
-# the host compiler, which catches the mistakes that matter here: a widget or
-# resource that doesn't exist in Motif 1.2, a nested comment, a C99-ism.
+# Syntax-check the IRIX-only sources against a REAL IRIX header tree, without
+# needing an IRIX machine. gui_motif.c and irix.c cannot be COMPILED on the dev
+# box - there is no <Xm/Xm.h> or <sys/dsreq.h> - but pointed at a copy of an
+# IRIX /usr/include they parse fine under the host compiler, which catches the
+# mistakes that actually matter here: a widget or resource that does not exist
+# in Motif 1.2, a struct field with the wrong type, a nested comment, a C99-ism.
 #
-#   make gui-syntax IRIX_INCLUDE=/path/to/irix/usr/include
+#   make irix-syntax IRIX_INCLUDE=/path/to/irix/usr/include
 #
-# The -D flags stand in for what MIPSpro predefines (sgidefs.h errors out
-# without them) and for the couple of types the host compiler supplies as
-# builtins. Warnings from inside the IRIX headers themselves are expected -
-# they are K&R-era declarations - so only gui_motif.c's own output matters.
+# The -D flags stand in for what MIPSpro predefines (sgidefs.h hard-errors
+# without _MIPS_SZINT et al) and for the couple of types the host compiler
+# supplies as builtins. Warnings from inside the IRIX headers themselves are
+# expected - they are K&R-era declarations - so only our own files' output
+# matters. gui-syntax is kept as an alias for the GUI-only check.
 IRIX_INCLUDE =
+IRIX_ONLY_SRCS = gui_motif.c irix.c
 IRIX_FAKE_CC = -std=gnu89 -Wall -fsyntax-only -nostdinc \
 	-D_LANGUAGE_C -D_MIPS_SZINT=32 -D_MIPS_SZLONG=32 -D_MIPS_SZPTR=32 \
 	-D_LONGLONG -D_SGI_SOURCE -D__EXTENSIONS__ -D_WCHAR_T \
 	-Dwchar_t=int "-DXIM=void *" -Dbitlen_t=long
 
-gui-syntax:
+irix-syntax gui-syntax:
 	@if [ -z "$(IRIX_INCLUDE)" ]; then \
 		echo "Set IRIX_INCLUDE to an IRIX /usr/include tree, e.g."; \
-		echo "  make gui-syntax IRIX_INCLUDE=/tmp/irix/include"; exit 1; \
+		echo "  make irix-syntax IRIX_INCLUDE=/tmp/irix/include"; exit 1; \
 	fi
-	$(CC) $(IRIX_FAKE_CC) -DOS_IRIX -I. -I$(IRIX_INCLUDE) gui_motif.c 2>&1 \
-		| grep '^gui_motif\.c' | grep -v deprecated-non-prototype || true
-	@echo "*** gui_motif.c: no errors against $(IRIX_INCLUDE)"
+	@for f in $(IRIX_ONLY_SRCS); do \
+		echo "--- $$f"; \
+		$(CC) $(IRIX_FAKE_CC) -DOS_IRIX -I. -I$(IRIX_INCLUDE) $$f 2>&1 \
+			| grep "^$$f" | grep -v deprecated-non-prototype || true; \
+	done
+	@echo "*** no errors against $(IRIX_INCLUDE)"
 
 # Build targets
 irixscsitb: $(OBJS)

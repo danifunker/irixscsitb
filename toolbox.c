@@ -571,6 +571,39 @@ int toolbox_getfile(int dev, int idx, char *outdir)
 	return 0;
 }
 
+/*
+ * Get the host out of the way before a CD image is switched.
+ *
+ * Swapping the image under a MOUNTED filesystem leaves the host holding cached
+ * metadata for a disc that is no longer there: at best the new disc never
+ * appears, at worst the mounted filesystem is corrupted. Confirmed on real
+ * hardware - a BlueSCSI v2 on an Indigo would not present the new disc until
+ * /CDROM had been unmounted by hand.
+ *
+ * So: look for a mount of this target, and try to clear it. Whether a BUSY
+ * result is fatal is the front end's call (the CLI wants -f, the GUI wants a
+ * confirmation), which is why this reports rather than decides.
+ */
+int toolbox_prepare_cd_swap(const char *path, char *mnt, int mntlen,
+			    char *why, int whylen)
+{
+	if (mnt != NULL && mntlen > 0)
+		mnt[0] = '\0';
+	if (why != NULL && whylen > 0)
+		why[0] = '\0';
+
+	if (media_find_mount(path, mnt, mntlen, NULL, 0) != 1)
+		return CDSWAP_NOT_MOUNTED;
+
+	if (verbose)
+		fprintf (stdout, "CD volume mounted at %s; unmounting before the swap\n", mnt);
+
+	if (media_unmount(mnt, why, whylen) == 0)
+		return CDSWAP_UNMOUNTED;
+
+	return CDSWAP_BUSY;
+}
+
 /** TOOLBOX_MODE_DEVICES (read, length 10)
  * Input:
  *  CDB 00 = command byte

@@ -51,3 +51,26 @@ int path_to_devnum(const char *path);
 
 int mediad_start(void); /*Helper functions to start and stop the removable device damons */
 int mediad_stop(void);
+
+/*
+ * Mount handling around a CD image swap.
+ *
+ * Swapping the image out from under a MOUNTED filesystem is how you corrupt
+ * it: the host still holds cached metadata for the old disc. Verified on real
+ * hardware - a BlueSCSI v2 on an Indigo would not pick up the new disc until
+ * /CDROM was unmounted first. So the swap has to check, and refuse when the
+ * volume is busy.
+ *
+ * media_find_mount(): is the emulated target behind `path` mounted right now?
+ *   Fills mnt (mount point) and dev (block device); either may be NULL.
+ *   Returns 1 if mounted, 0 if not, -1 if it could not be determined.
+ *
+ * media_unmount(): unmount that mount point. Returns 0 on success, -1 on
+ *   failure - and on failure fills `why` with a human-readable reason,
+ *   including which processes are holding it open where the OS can say.
+ *
+ * The Linux backend stubs both out: there is no mediad there and no
+ * convention about who owns a removable mount.
+ */
+int media_find_mount(const char *path, char *mnt, int mntlen, char *dev, int devlen);
+int media_unmount(const char *mnt, char *why, int whylen);

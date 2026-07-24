@@ -50,14 +50,16 @@ extern int verbose;
  */
 int mediad_start(void)
 {
-	fprintf(stderr, "mediad_start(): Not implemented on Linux\n");
-    	return 1;
+	if (verbose)
+		fprintf(stderr, "mediad_start(): no equivalent on Linux, skipping\n");
+	return 0;
 }
 
-int mediad_stop(void) 
+int mediad_stop(void)
 {
-	fprintf(stderr, "mediad_stop(): Not implemented on Linux\n");
-    	return 1;
+	if (verbose)
+		fprintf(stderr, "mediad_stop(): no equivalent on Linux, skipping\n");
+	return 0;
 }
 
 int scsi_open(char *path, int readonly)
@@ -245,4 +247,29 @@ int path_to_devnum(const char *path) {
     if (verbose)
 	    fprintf(stderr, "Found something at SCSI ID%i\n", scsi_id.scsi_id);
     return scsi_id.scsi_id;
+}
+
+/*
+ * Mount handling around a CD swap - no-ops on Linux. There is no mediad, and
+ * no convention about who owns a removable mount (that is a desktop
+ * automounter's business and entirely distro-specific), so claiming "not
+ * mounted" is the honest answer rather than guessing at /proc/mounts and
+ * unmounting something the user asked for.
+ */
+int media_find_mount(const char *path, char *mnt, int mntlen, char *dev, int devlen)
+{
+	(void)path;
+	if (mnt != NULL && mntlen > 0)
+		mnt[0] = '\0';
+	if (dev != NULL && devlen > 0)
+		dev[0] = '\0';
+	return 0;
+}
+
+int media_unmount(const char *mnt, char *why, int whylen)
+{
+	(void)mnt;
+	if (why != NULL && whylen > 0)
+		why[0] = '\0';
+	return 0;
 }

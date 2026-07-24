@@ -48,6 +48,7 @@
 #include <Xm/MessageB.h>
 #include <Xm/FileSB.h>
 #include <Xm/SelectioB.h>
+#include <X11/Shell.h>
 
 #include "irixscsitb.h"
 
@@ -114,6 +115,48 @@ static String fallback_resources[] = {
 	NULL
 };
 
+/*
+ * Window-manager icon: a 32x32 one-bit disc.
+ *
+ * XBM rather than XPM because IRIX 5.3 ships libXpm.so WITHOUT its header -
+ * /usr/include/X11/xpm.h is simply absent, exactly like ViewKit - so it cannot
+ * be built against. XCreateBitmapFromData is core Xlib and always present, and
+ * one bit deep is period-appropriate anyway.
+ *
+ * This is the WM icon, i.e. what 4Dwm shows when the window is iconified. A
+ * proper Indigo Magic DESKTOP icon is a different and much larger job (FTR
+ * rules plus a vector .icon file) and is deliberately not attempted.
+ */
+#define ICON_WIDTH  32
+#define ICON_HEIGHT 32
+static unsigned char icon_bits[] = {
+   0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x1c, 0x00, 0x00, 0x03, 0xc0, 0x00,
+   0x80, 0xf0, 0x0f, 0x01, 0x40, 0xfc, 0x3f, 0x02, 0x20, 0xff, 0xff, 0x04,
+   0x90, 0xff, 0xff, 0x09, 0xc8, 0xff, 0xff, 0x13, 0xe4, 0xff, 0xff, 0x27,
+   0xe4, 0xff, 0xff, 0x27, 0xf0, 0x1f, 0xf8, 0x0f, 0xf2, 0x8f, 0xf1, 0x4f,
+   0xfa, 0xe7, 0xe7, 0x5f, 0xfa, 0x33, 0xcc, 0x5f, 0xf8, 0x13, 0xc8, 0x1f,
+   0xf8, 0x1b, 0xd8, 0x1f, 0xf8, 0x1b, 0xd8, 0x1f, 0xf8, 0x13, 0xc8, 0x1f,
+   0xfa, 0x33, 0xcc, 0x5f, 0xfa, 0xe7, 0xe7, 0x5f, 0xf2, 0x8f, 0xf1, 0x4f,
+   0xf0, 0x1f, 0xf8, 0x0f, 0xe4, 0xff, 0xff, 0x27, 0xe4, 0xff, 0xff, 0x27,
+   0xc8, 0xff, 0xff, 0x13, 0x90, 0xff, 0xff, 0x09, 0x20, 0xff, 0xff, 0x04,
+   0x40, 0xfc, 0x3f, 0x02, 0x80, 0xf0, 0x0f, 0x01, 0x00, 0x03, 0xc0, 0x00,
+   0x00, 0x38, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+static void set_window_icon(Widget shell)
+{
+	Display *dpy = XtDisplay(shell);
+	Pixmap pm;
+
+	if (dpy == NULL)
+		return;
+	pm = XCreateBitmapFromData(dpy, RootWindow(dpy, DefaultScreen(dpy)),
+				   (char *)icon_bits, ICON_WIDTH, ICON_HEIGHT);
+	if (pm == None)
+		return;
+	XtVaSetValues(shell, XtNiconPixmap, pm, XtNiconName, "scsitbgui", NULL);
+}
+
 /* Which listing the lower pane is showing. */
 #define CONTENT_SHARED 0
 #define CONTENT_CDS    1
@@ -132,6 +175,15 @@ static int sel_dev = -1;        /* index into scan[], -1 = nothing selected */
 static ToolboxFileEntry entries[MAX_FILES];
 static int entries_n;
 static int content_mode = CONTENT_SHARED;
+
+/*
+ * Set only while re-entering do_switch_cd() from the "Switch Anyway" button of
+ * the busy-volume confirmation, so the second pass skips the guard.
+ */
+static int cd_swap_forced;
+static Widget cd_force_dialog;
+
+static void do_switch_cd(void);
 
 /* ------------------------------------------------------------------ *
  * small helpers
@@ -671,11 +723,72 @@ static void do_debug_set(int on)
 	set_status(on ? "Debug logging enabled." : "Debug logging disabled.");
 }
 
+/* ARGSUSED */
+static void cd_force_ok_cb(Widget w, XtPointer client, XtPointer call)
+{
+	cd_swap_forced = 1;
+	do_switch_cd();
+	cd_swap_forced = 0;
+}
+
+/*
+ * The volume would not unmount. Say who is holding it and make the operator
+ * decide: proceeding swaps the image under a live mount, which is how the
+ * mounted filesystem gets corrupted, so the default action is to back out.
+ */
+static void confirm_busy_swap(const char *mnt, const char *why)
+{
+	char text[768];
+	char holders[384];
+	XmString xs, xt;
+
+	copy_clamped(holders, (int)sizeof(holders), why);
+
+	sprintf(text,
+		"%s is still mounted and could not be unmounted.\n\n"
+		"%s%s"
+		"Switching the image now risks corrupting that filesystem, and the\n"
+		"new disc may not appear until it is unmounted.\n\n"
+		"Close whatever is using it - a shell sitting in the directory counts -\n"
+		"then try again.",
+		mnt,
+		holders[0] != '\0' ? "Still in use by:\n" : "",
+		holders[0] != '\0' ? holders : "");
+
+	if (cd_force_dialog == NULL) {
+		cd_force_dialog = XmCreateQuestionDialog(toplevel, "cdForceDialog", NULL, 0);
+		XtUnmanageChild(XmMessageBoxGetChild(cd_force_dialog, XmDIALOG_HELP_BUTTON));
+		XtAddCallback(cd_force_dialog, XmNokCallback, cd_force_ok_cb, NULL);
+
+		xs = XmStringCreateLtoR("Switch Anyway", XmSTRING_DEFAULT_CHARSET);
+		XtVaSetValues(cd_force_dialog, XmNokLabelString, xs, NULL);
+		XmStringFree(xs);
+		xs = XmStringCreateLtoR("Cancel", XmSTRING_DEFAULT_CHARSET);
+		XtVaSetValues(cd_force_dialog, XmNcancelLabelString, xs, NULL);
+		XmStringFree(xs);
+
+		/* Cancel is the safe answer, so it is the one that has focus. */
+		XtVaSetValues(cd_force_dialog, XmNdefaultButtonType,
+			      XmDIALOG_CANCEL_BUTTON, NULL);
+	}
+
+	xs = XmStringCreateLtoR(text, XmSTRING_DEFAULT_CHARSET);
+	xt = XmStringCreateLtoR("Volume busy", XmSTRING_DEFAULT_CHARSET);
+	XtVaSetValues(cd_force_dialog, XmNmessageString, xs, XmNdialogTitle, xt, NULL);
+	XmStringFree(xs);
+	XmStringFree(xt);
+
+	XtManageChild(cd_force_dialog);
+	set_status("CD not switched - the volume is still mounted.");
+}
+
 /* Switch the emulated CD drive to the image selected in the lower pane. */
 static void do_switch_cd(void)
 {
 	char text[NAME_BUF_SIZE + 160];
-	int dev, row, scsi_id;
+	char mnt[SCSI_PATH_MAX];
+	char why[512];
+	int dev, row, scsi_id, swap;
 
 	if (!require_toolbox())
 		return;
@@ -709,6 +822,20 @@ static void do_switch_cd(void)
 	 */
 	mediad_stop();
 
+	/*
+	 * Now clear the mount. mediad -k unmounts what mediad itself mounted,
+	 * but not a volume the operator mounted by hand - and swapping the image
+	 * under a live mount is what leaves the host with cached metadata for a
+	 * disc that is gone. Verified on hardware: the new disc does not appear
+	 * until /CDROM is unmounted.
+	 */
+	swap = toolbox_prepare_cd_swap(scan[sel_dev].path, mnt, sizeof(mnt), why, sizeof(why));
+	if (swap == CDSWAP_BUSY && !cd_swap_forced) {
+		mediad_start();
+		confirm_busy_swap(mnt, why);
+		return;
+	}
+
 	dev = open_selected(1);
 	if (dev < 0) {
 		mediad_start();
@@ -723,7 +850,9 @@ static void do_switch_cd(void)
 	scsi_close(dev);
 	mediad_start();
 
-	sprintf(text, "Switched to CD image:\n\n    %s", entries[row].name);
+	sprintf(text, "Switched to CD image:\n\n    %s%s", entries[row].name,
+		swap == CDSWAP_UNMOUNTED ? "\n\n(the old volume was unmounted first)" :
+			(swap == CDSWAP_BUSY ? "\n\nWARNING: the old volume was still mounted." : ""));
 	show_msg("CD switched", text, 0);
 	set_status("CD image switched.");
 }
@@ -977,10 +1106,53 @@ static void put_ok_cb(Widget w, XtPointer client, XtPointer call)
 		refresh_content();
 }
 
+/*
+ * Give the file browser an explicit starting directory, with exactly one
+ * trailing slash.
+ *
+ * XmNdirMask is XmNdirectory concatenated with XmNpattern, so the separator
+ * has to be there - but only one of it. A directory that already ends in a
+ * slash is what produces the doubled separators seen in the filter field and
+ * the directory list.
+ *
+ * Setting it ourselves also sidesteps a platform hazard: left alone, Motif
+ * derives the starting directory by calling getcwd(3), which on IRIX 5.3 fails
+ * outright inside an IRIS NFS mount ("getcwd (bu5)."). $HOME is a better
+ * default for "pick a file to send" anyway than wherever the binary was
+ * launched from.
+ */
+static void set_dialog_start_dir(Widget dlg)
+{
+	char dir[1024];
+	const char *home = getenv("HOME");
+	XmString xs;
+	int n;
+
+	if (home == NULL || *home == '\0')
+		home = "/";
+	copy_clamped(dir, (int)sizeof(dir) - 2, home);
+
+	n = (int)strlen(dir);
+	while (n > 0 && dir[n - 1] == '/')
+		dir[--n] = '\0';
+	if (n == 0)
+		strcpy(dir, "/");
+	else
+		strcat(dir, "/");
+
+	xs = XmStringCreateLtoR(dir, XmSTRING_DEFAULT_CHARSET);
+	XtVaSetValues(dlg, XmNdirectory, xs, NULL);
+	XmStringFree(xs);
+
+	xs = XmStringCreateLtoR("*", XmSTRING_DEFAULT_CHARSET);
+	XtVaSetValues(dlg, XmNpattern, xs, NULL);
+	XmStringFree(xs);
+}
+
 /* ARGSUSED */
 static void put_file_cb(Widget w, XtPointer client, XtPointer call)
 {
-	XmString xt;
+	XmString xs, xt;
 
 	if (!require_toolbox())
 		return;
@@ -990,7 +1162,14 @@ static void put_file_cb(Widget w, XtPointer client, XtPointer call)
 		XtUnmanageChild(XmFileSelectionBoxGetChild(file_dialog, XmDIALOG_HELP_BUTTON));
 		XtAddCallback(file_dialog, XmNokCallback, put_ok_cb, NULL);
 		/* Cancel needs no callback: dialogs default to XmNautoUnmanage
-		 * True, so they take themselves down. */
+		 * True, so they take themselves down. It is relabelled "Close"
+		 * because that is what the button does here - the dialog is a
+		 * browser you are done with, not an operation being aborted. */
+		xs = XmStringCreateLtoR("Close", XmSTRING_DEFAULT_CHARSET);
+		XtVaSetValues(file_dialog, XmNcancelLabelString, xs, NULL);
+		XmStringFree(xs);
+
+		set_dialog_start_dir(file_dialog);
 	}
 	xt = XmStringCreateLtoR("Put File into /shared", XmSTRING_DEFAULT_CHARSET);
 	XtVaSetValues(file_dialog, XmNdialogTitle, xt, NULL);
@@ -1162,6 +1341,8 @@ int main(int argc, char *argv[])
 		else if (strcmp(argv[i], "-F") == 0)
 			force_toolbox = 1;
 	}
+
+	set_window_icon(toplevel);
 
 	mainw = XmCreateMainWindow(toplevel, "mainw", NULL, 0);
 	XtManageChild(mainw);

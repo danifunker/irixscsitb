@@ -215,6 +215,22 @@ int toolbox_getfile(int dev, int idx, char *outdir);
 int toolbox_listfiles(int dev, ToolboxFileEntry *entries, int max);
 int toolbox_listcds(int dev, ToolboxFileEntry *entries, int max);
 
+/*
+ * Outcomes of toolbox_prepare_cd_swap(). The first two mean "go ahead"; the
+ * third means the swap must NOT happen unless the operator overrides.
+ */
+#define CDSWAP_NOT_MOUNTED  0   /* nothing was mounted */
+#define CDSWAP_UNMOUNTED    1   /* it was mounted; we unmounted it */
+#define CDSWAP_BUSY         2   /* still mounted and in use - do not swap */
+
+/*
+ * Get the host out of the way before a CD image is switched: find whether the
+ * target's volume is mounted and, if so, unmount it. mnt receives the mount
+ * point (required, non-NULL); why receives the reason on CDSWAP_BUSY.
+ */
+int toolbox_prepare_cd_swap(const char *path, char *mnt, int mntlen,
+			    char *why, int whylen);
+
 /* Raw 8-byte device-type map (0xD9) into map[]. Returns 0 on success. */
 int toolbox_listdevices(int dev, unsigned char map[8]);
 

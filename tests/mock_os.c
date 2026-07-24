@@ -193,3 +193,26 @@ int scsi_send_commandw(int dev, unsigned char *cmd, int cmd_len, unsigned char *
 	(void)dev; (void)cmd; (void)cmd_len; (void)buf; (void)buf_len;
 	return 0;
 }
+
+/*
+ * Mount handling: the mock bus has no filesystems, so nothing is ever mounted
+ * and the CD-swap guard always sees a clear path. That is the case worth
+ * exercising here - the busy path needs a real mount to be meaningful.
+ */
+int media_find_mount(const char *path, char *mnt, int mntlen, char *dev, int devlen)
+{
+	(void)path;
+	if (mnt != NULL && mntlen > 0)
+		mnt[0] = '\0';
+	if (dev != NULL && devlen > 0)
+		dev[0] = '\0';
+	return 0;
+}
+
+int media_unmount(const char *mnt, char *why, int whylen)
+{
+	(void)mnt;
+	if (why != NULL && whylen > 0)
+		why[0] = '\0';
+	return 0;
+}

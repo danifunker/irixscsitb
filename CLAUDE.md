@@ -312,13 +312,15 @@ ignored and it renders as ordinary Motif.
 keep that in mind for any other Xt call that takes an argc.
 
 **Testing it on the dev box:** `gui_motif.c` cannot be *compiled* on macOS, but
-`make gui-syntax IRIX_INCLUDE=<tree>` parses it against a copy of a real IRIX
-`/usr/include` under the host compiler. That catches what matters — a widget or
+`make irix-syntax IRIX_INCLUDE=<tree>` parses it — and `irix.c` — against a copy
+of a real IRIX `/usr/include` under the host compiler. That catches what matters — a widget or
 resource that doesn't exist in 1.2, a nested `/*`, a C99-ism — without an IRIX
 machine. The `-D` flags in the `IRIX_FAKE_CC` variable stand in for what MIPSpro
 predefines (`sgidefs.h` hard-errors without `_MIPS_SZINT` et al). Warnings from
-inside the IRIX headers are expected (K&R declarations); only `gui_motif.c`'s own
-output matters. Run it after any GUI change.
+inside the IRIX headers are expected (K&R declarations); only our own files'
+output matters. **Run it after any change to `gui_motif.c` or `irix.c`** — those
+are the two files no other check covers, and it has already caught an X11R4-vs-R6
+signature mismatch, a nested `/*`, and a wrong `printf` type in `test_dsreq_flags`.
 
 ## Build identification
 
@@ -371,6 +373,23 @@ selects it on IRIX and it would not compile there.
 
 ## Known issues / gotchas
 
+- **CD swap needs the volume UNMOUNTED first (fixed, needs re-testing):** confirmed
+  on a real Indigo + BlueSCSI v2 — the new disc does not appear until `/CDROM` is
+  unmounted, because the host still holds cached metadata for the disc that left.
+  `mediad -k` unmounts what *mediad* mounted but not a hand-mounted volume, so
+  the swap path now calls `toolbox_prepare_cd_swap()`: find the mount via
+  `/etc/mtab` (matching the `dks<c>d<id>` stem), `umount` it, and on failure ask
+  `fuser -c` who is holding it. A busy volume **blocks** the swap — CLI needs
+  `-f`, the GUI shows a "Volume busy" dialog defaulting to Cancel.
+- **`mediad` restart race (fixed, needs re-testing on hardware):** `/etc/init.d/mediad
+  stop` runs `mediad -k`, which only *asks* the daemon to exit — it then unmounts
+  its media before actually going. Restarting immediately raced that shutdown and
+  mediad refused with *"Another mediad is running. Only one is allowed at a
+  time."* The failure mode is worse than it sounds: the new mediad refuses, the
+  old one then exits, and the system is left with **no** mediad — so a
+  newly-switched CD never remounts. `mediad_stop()` now polls `ps` until the
+  daemon is really gone (10s cap), `mediad_start()` skips a redundant start and
+  warns if `chkconfig mediad` is off. Reported from a real Indigo + BlueSCSI v2.
 - **Issue #3 (PUT to `/shared` "hangs" on IRIX):** the IRIX write path
   (`scsi_send_commandw`) used to do a redundant per-command TEST UNIT READY loop
   plus an unconditional `usleep(100ms)` after *every* 512-byte block, so
