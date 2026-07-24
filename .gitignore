@@ -8,7 +8,8 @@ dist/
 # irixscsitb build outputs (kept out of the tree in case the repo itself is
 # shared out over NFS as the build source)
 /irixscsitb
-/build/
+/scsitbgui
+/output/
 build-*.log
 *.tar.gz
 *.tar

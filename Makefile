@@ -4,10 +4,10 @@ LDFLAGS =
 SRCS =
 OBJS =
 
-# Build artifacts (binary, objects) land in the repo root; the packaged tarball
-# goes under $(BUILDDIR). Everything here is .gitignore'd so the tree stays clean
-# even when the repo itself is shared out over NFS.
-BUILDDIR = build
+# Objects and binaries land in the repo root; everything finished - binaries,
+# tarball, logs - is collected under $(BUILDDIR) (output/). All .gitignore'd so
+# the tree stays clean even when the repo itself is shared out over NFS.
+BUILDDIR = output
 TARNAME  = irixscsitb.tar.gz
 
 # MUST be the first target in this file: make takes the first rule it sees as

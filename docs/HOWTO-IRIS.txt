@@ -61,13 +61,24 @@ log - in a stable LOCAL scratch dir in your home ($HOME/irixscsitb-build), then 
 the finished binary and the log back into this (NFS) folder. Run it straight
 from the NFS mount.
 
-Output, copied into a build/ subfolder here (so it shows up on the Mac too, and
-stays out of the repo if the repo itself is the NFS share - build/ is gitignored):
-   build/irixscsitb          the CLI binary (also at $HOME/irixscsitb-build/)
-   build/scsitbgui         the Motif GUI binary, if it built
-   build/irixscsitb.tar.gz   packaged binaries (+README) - easy to distribute
-   build/build-<stamp>.log  full log of that build
-   build/build-latest.log   copy of the most recent log
+Everything finished is collected into an output/ subfolder here, so it shows up
+on the Mac too and stays out of the repo if the repo itself is the NFS share
+(output/ is gitignored):
+
+   output/irixscsitb                the CLI binary
+   output/scsitbgui                 the Motif GUI binary, if it built
+   output/install.sh                installer - run as root, see section 3
+   output/desktop/                  desktop icon rules the installer needs
+   output/README.md
+   output/irixscsitb-<rev>.tar.gz   all of the above in one file, ready to
+                                    copy to another machine and unpack
+   output/build-<stamp>.log         full log (+ build-latest.log)
+
+The binaries also stay in $HOME/irixscsitb-build; you can run them straight
+from there without installing anything.
+
+(This folder used to be called build/. If you have an old one lying around it
+is just stale - delete it.)
 
 The tarball is produced by the Makefile ('make tar' packages irixscsitb+README
 into build/irixscsitb.tar.gz; needs gzip on PATH). build.sh runs it for you.
@@ -81,7 +92,33 @@ Run the binary from local disk (most reliable):  cd $HOME/irixscsitb-build
 then ./irixscsitb ...  (the examples below).
 
 
-3. Test the new + existing features (run as root)
+3. Install it (optional)
+------------------------
+To put the tools on the system properly, as root:
+
+   cd output
+   ./install.sh                 # binaries -> /usr/local/bin, plus desktop icons
+   PREFIX=/usr ./install.sh     # -> /usr/bin instead
+   NOICONS=1 ./install.sh       # binaries only, skip the desktop icon rules
+
+It installs two independent things:
+
+   1. The binaries. Usable immediately.
+   2. The desktop File Typing Rules, which are what give the executables an
+      icon in the Icon Catalog and file manager. It copies them into
+      /usr/lib/filetype/local/, adds the rule to that directory's Makefile
+      (keeping a backup) and rebuilds the type database.
+
+The desktop only reads its type database at startup, so the ICON does not
+appear until it restarts. The script says so at the end:
+
+      PLEASE REBOOT (or log out and back in) to see the icon.
+
+You do NOT have to install anything to test - the binaries run fine from
+$HOME/irixscsitb-build or from output/.
+
+
+4. Test the new + existing features (run as root)
 -------------------------------------------------
 START HERE - scan the bus to find your device (NEW, needs no device path):
    ./irixscsitb -b
@@ -137,8 +174,8 @@ What "working" looks like for the three new bits:
 Add -v to any command for verbose output if something doesn't behave.
 
 
-4. Test the Motif GUI (NEW)
----------------------------
+5. Test the Motif GUI
+---------------------
 The GUI needs an X display, so run it from an xwsh/winterm inside the IRIX
 desktop rather than from a serial console:
 
@@ -194,7 +231,7 @@ Things worth reporting back:
     if this system has them - but which one you get is useful to know.
 
 
-5. Icons - three different things
+6. Icons - three different things
 ---------------------------------
 Worth separating, because they come from different places:
 

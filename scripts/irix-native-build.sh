@@ -29,12 +29,18 @@
 # compile or link (no Motif dev installed, say) the script says so and still
 # delivers the CLI, because the CLI is the thing you cannot do without.
 #
-# Results copied into a build/ subfolder of this (NFS) share (.gitignore'd, so
-# it's safe even if the repo itself is the share):
-#   build/irixscsitb         the built CLI binary
-#   build/scsitbgui        the built Motif GUI binary (if it built)
-#   build/irixscsitb.tar.gz  packaged binaries (+README) for distribution
-#   build/build-<stamp>.log full log of that build (+ build-latest.log)
+# Everything finished lands in an output/ subfolder of this (NFS) share, so the
+# host can pick the whole thing up in one go (.gitignore'd, so it is safe even
+# if the repo itself is the share):
+#
+#   output/irixscsitb                the CLI binary
+#   output/scsitbgui                 the Motif GUI binary (if it built)
+#   output/install.sh                installer - run as root on the target
+#   output/desktop/                  desktop icon rules the installer needs
+#   output/README.md
+#   output/irixscsitb-<rev>.tar.gz   all of the above, ready to distribute
+#   output/build-<stamp>.log         full log (+ build-latest.log)
+#
 # The binaries also stay in $HOME/irixscsitb-build; run them from there.
 
 # Where the sources + this script live (the NFS share).  Taken from $0 - do NOT
@@ -89,10 +95,24 @@ else
 	echo "WARN: no version.h shipped - re-run scripts/sync-irix-drop.sh on the host." | tee -a "$LOG"
 fi
 
+# The revision names the staging directory and the tarball, so unpacking gives
+# you a folder you can identify months later rather than a generic "pkg".
+REV=`sed -n 's/^#define BUILD_REV  *"\(.*\)"/\1/p' "$SRCDIR/version.h" 2>/dev/null`
+if [ -z "$REV" ]; then
+	REV=unknown
+fi
+
 # Carried only as a safety net: if version.h is missing entirely, this lets the
 # Makefile write an "unknown" stub instead of failing outright.
 mkdir -p "$BUILDDIR/scripts" 2>/dev/null
 cp "$SRCDIR/scripts/mkversion.sh" "$BUILDDIR/scripts"/ 2>/dev/null
+
+# Shipped alongside the binaries rather than built: the installer and the
+# desktop icon rules it puts in place.
+mkdir -p "$BUILDDIR/desktop/iconlib" 2>/dev/null
+cp "$SRCDIR/install.sh" "$BUILDDIR"/ 2>/dev/null
+cp "$SRCDIR/desktop/scsitbgui.ftr" "$BUILDDIR/desktop"/ 2>/dev/null
+cp "$SRCDIR/desktop/iconlib/scsitbgui.fti" "$BUILDDIR/desktop/iconlib"/ 2>/dev/null
 
 # --- 2. build locally (getcwd + make work on local disk) --------------------
 echo ">>> building CLI ($TARGET) in $BUILDDIR" | tee -a "$LOG"
@@ -110,11 +130,13 @@ fi
 
 echo "----------------------------------------" | tee -a "$LOG"
 
-# --- 3. package + copy everything into <share>/build/ -----------------------
+# --- 3. stage everything, tar it, copy into <share>/output/ -----------------
 # Success is decided by the binary existing, not by the pipe's exit status
 # (Bourne sh reports tee's status after a pipeline, not make's).
-OUT="$SRCDIR/build"          # tidy build folder on the share (.gitignore'd)
+OUT="$SRCDIR/output"        # finished artifacts on the share (.gitignore'd)
+PKG="$BUILDDIR/irixscsitb-$REV"   # staging dir = the tarball's single root
 mkdir -p "$OUT" 2>/dev/null
+rm -rf "$PKG"; mkdir -p "$PKG/desktop/iconlib"
 
 if [ -x "$BUILDDIR/irixscsitb" ]; then
 	echo "OK: built irixscsitb (CLI)" | tee -a "$LOG"
@@ -139,23 +161,38 @@ if [ -x "$BUILDDIR/irixscsitb" ]; then
 		echo "      should list motif_dev. Re-run with NOGUI=1 to silence this." | tee -a "$LOG"
 	fi
 
-	# Package a .tar.gz locally where getcwd works (gzip must be on PATH).
-	# Non-fatal: if gzip is missing the binary is still delivered.
-	echo ">>> packaging irixscsitb.tar.gz" | tee -a "$LOG"
-	( cd "$BUILDDIR" || exit 1; \
-	  files="irixscsitb"; \
-	  if [ -f scsitbgui ]; then files="$files scsitbgui"; fi; \
-	  if [ -f README.md ]; then files="$files README.md"; fi; \
-	  tar cf - $files | gzip -c > irixscsitb.tar.gz ) 2>&1 | tee -a "$LOG"
+	# --- assemble the distributable ------------------------------------
+	# Everything a target machine needs: both binaries, the installer, the
+	# desktop icon rules it installs, and the README. One directory, so the
+	# tarball unpacks into one place rather than scattering.
+	cp "$BUILDDIR/irixscsitb" "$PKG"/ 2>/dev/null
+	[ -x "$BUILDDIR/scsitbgui" ] && cp "$BUILDDIR/scsitbgui" "$PKG"/ 2>/dev/null
+	[ -f "$BUILDDIR/README.md" ] && cp "$BUILDDIR/README.md" "$PKG"/ 2>/dev/null
+	[ -f "$BUILDDIR/install.sh" ] && cp "$BUILDDIR/install.sh" "$PKG"/ 2>/dev/null
+	[ -f "$BUILDDIR/desktop/scsitbgui.ftr" ] && \
+		cp "$BUILDDIR/desktop/scsitbgui.ftr" "$PKG/desktop"/ 2>/dev/null
+	[ -f "$BUILDDIR/desktop/iconlib/scsitbgui.fti" ] && \
+		cp "$BUILDDIR/desktop/iconlib/scsitbgui.fti" "$PKG/desktop/iconlib"/ 2>/dev/null
+	chmod 755 "$PKG/install.sh" 2>/dev/null
+
+	TARBALL="irixscsitb-$REV.tar.gz"
+
+	# Packed locally where getcwd works (gzip must be on PATH; IRIX 5.3 tar
+	# has no z flag). Non-fatal - the loose binaries are still delivered.
+	echo ">>> packaging $TARBALL" | tee -a "$LOG"
+	( cd "$BUILDDIR" && tar cf - "irixscsitb-$REV" | gzip -c > "$TARBALL" ) 2>&1 | tee -a "$LOG"
+
 	echo "" | tee -a "$LOG"
-	echo "Run it from local disk (as root):"        | tee -a "$LOG"
+	echo "To install on this machine (as root):" | tee -a "$LOG"
+	echo "  cd $OUT && ./install.sh" | tee -a "$LOG"
+	echo "" | tee -a "$LOG"
+	echo "Or run straight from local disk without installing:" | tee -a "$LOG"
 	echo "  cd $BUILDDIR"                            | tee -a "$LOG"
+	echo "  ./irixscsitb -b                     # scan the bus (no device path needed)" | tee -a "$LOG"
 	echo "  ./irixscsitb -i /dev/scsi/sc0d1l0   # interrogate / detect"       | tee -a "$LOG"
-	echo "  ./irixscsitb -t /dev/scsi/sc0d1l0   # NEW: list emulated targets" | tee -a "$LOG"
-	echo "  ./irixscsitb -D /dev/scsi/sc0d1l0   # NEW: show debug state"      | tee -a "$LOG"
-	echo "  ./irixscsitb -s /dev/scsi/sc0d1l0   # list /shared"              | tee -a "$LOG"
-	echo "  ./irixscsitb -l /dev/scsi/sc0d1l0   # NEW: richer CD listing"     | tee -a "$LOG"
-	echo "  ./irixscsitb -b                        # scan the bus (NO device path needed)" | tee -a "$LOG"
+	echo "  ./irixscsitb -t /dev/scsi/sc0d1l0   # list emulated targets"      | tee -a "$LOG"
+	echo "  ./irixscsitb -s /dev/scsi/sc0d1l0   # list /shared"               | tee -a "$LOG"
+	echo "  ./irixscsitb -l /dev/scsi/sc0d1l0   # list CD images"             | tee -a "$LOG"
 	echo "NOTE: -b is the only command that needs no device path; for the rest," | tee -a "$LOG"
 	echo "      put the options BEFORE the path (IRIX getopt does not reorder)." | tee -a "$LOG"
 	if [ -x "$BUILDDIR/scsitbgui" ]; then
@@ -170,14 +207,20 @@ else
 	RESULT=1
 fi
 
-# Copy artifacts into <share>/build so the host can grab them and the repo tree
-# stays clean. Plain cp's to the (possibly NFS) share - no getcwd needed.
+# Copy the finished set onto the share so the host can grab it. Plain cp's to
+# a (possibly NFS) directory - no getcwd needed anywhere here.
 echo ">>> copying results into $OUT" | tee -a "$LOG"
-[ -x "$BUILDDIR/irixscsitb" ]        && cp "$BUILDDIR/irixscsitb"        "$OUT"/ 2>/dev/null
-[ -x "$BUILDDIR/scsitbgui" ]       && cp "$BUILDDIR/scsitbgui"       "$OUT"/ 2>/dev/null
-[ -f "$BUILDDIR/irixscsitb.tar.gz" ] && cp "$BUILDDIR/irixscsitb.tar.gz" "$OUT"/ 2>/dev/null
+mkdir -p "$OUT/desktop/iconlib" 2>/dev/null
+for f in irixscsitb scsitbgui README.md install.sh; do
+	[ -f "$PKG/$f" ] && cp "$PKG/$f" "$OUT"/ 2>/dev/null
+done
+[ -f "$PKG/desktop/scsitbgui.ftr" ] && cp "$PKG/desktop/scsitbgui.ftr" "$OUT/desktop"/ 2>/dev/null
+[ -f "$PKG/desktop/iconlib/scsitbgui.fti" ] && cp "$PKG/desktop/iconlib/scsitbgui.fti" "$OUT/desktop/iconlib"/ 2>/dev/null
+[ -f "$BUILDDIR/$TARBALL" ] && cp "$BUILDDIR/$TARBALL" "$OUT"/ 2>/dev/null
+chmod 755 "$OUT/install.sh" 2>/dev/null
 
-echo "Artifacts in $OUT: irixscsitb, scsitbgui, irixscsitb.tar.gz, build-$STAMP.log (+ build-latest.log)" | tee -a "$LOG"
+echo "Artifacts in $OUT:" | tee -a "$LOG"
+ls "$OUT" 2>/dev/null | tee -a "$LOG"
 # Copy the (now complete) log last, to both a timestamped and a stable name.
 cp "$LOG" "$OUT"/build-"$STAMP".log 2>/dev/null
 cp "$LOG" "$OUT"/build-latest.log 2>/dev/null
