@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# IRIX o32 cross-toolchain (gcc 4.7.4) for bstoolbox, targeting IRIX 5.3 - 6.5.
+# IRIX o32 cross-toolchain (gcc 4.7.4) for irixscsitb, targeting IRIX 5.3 - 6.5.
 #
 # gcc removed the IRIX target after 4.7, and 4.7 won't build on a modern host, so
 # this reuses the PRE-PATCHED gcc-4.7-irix source from mroach/irix-builder (GPL)

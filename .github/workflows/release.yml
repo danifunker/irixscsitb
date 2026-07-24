@@ -1,26 +1,48 @@
 name: Release
 
-# Builds the IRIX bstoolbox binaries, packages them into EFS images with rb-cli
-# (rusty-backup), and publishes a GitHub release with everything attached.
+# Builds the IRIX irixscsitb binaries, packages them into .iso / .hda / .tar.gz
+# with rb-cli (rusty-backup), and publishes a GitHub release with everything
+# attached.
 #
 # Artifacts produced:
-#   bstoolbox-o32            IRIX o32/mips2 binary (runs on IRIX 5.3 - 6.5)
-#   bstoolbox-n32            IRIX n32/mips3 binary (IRIX 6.x, faster)
-#   bstoolbox-efs-cd-*.img   bare EFS image  -> IRIS emulated CD-ROM (mount -t efs)
-#   bstoolbox-sgi-hdd-*.img  dvh + EFS HDD   -> IRIS emulated SCSI hard disk
+#   irixscsitb-o32            IRIX o32/mips2 binary (5.3 - 6.5) — built NATIVELY in IRIS
+#   irixscsitb-n32            IRIX n32/mips3 binary (6.x, faster) — cross-compiled
+#   irixscsitb-*.iso          IRIX EFS CD-ROM   -> IRIS `cdrom = true` (mount -t efs ...s7)
+#   irixscsitb-*.hda          dvh + EFS HDD     -> IRIS `cdrom = false` SCSI disk
+#   irixscsitb-*.tar.gz       binaries + README -> drop into an NFS share and untar
 #
-# REQUIRED SETUP (the one external dependency):
-#   The IRIX binary needs a MIPS cross-gcc *and* an IRIX sysroot (proprietary SGI
-#   headers/libs: sys/dsreq.h, invent.h, libc). Provide both as a container image
-#   and set the repo variable IRIX_TOOLCHAIN_IMAGE (Settings > Variables), or pass
-#   the `irix_toolchain_image` input when dispatching. Optionally set IRIX_CC
-#   (default mips-sgi-irix6.5-gcc) if the cross-compiler is named differently.
+# WHY TWO DIFFERENT BUILDERS:
+#   - o32 (the 5.3-capable build) is built NATIVELY inside the IRIS emulator with
+#     MIPSpro cc, because GNU binutils cannot link IRIX 5.3's o32 shared libs. The
+#     `build-o32-native` job builds iris from source, boots a real IRIX 5.3 disk,
+#     and compiles over IRIS's built-in NFS share (scripts/iris-build.sh).
+#   - n32 (6.x only) is cross-compiled from a mips-sgi-irix gcc + IRIX sysroot,
+#     which links fine for 6.x (`build-n32-cross`).
+#
+# REQUIRED CONFIG (Settings > Secrets and variables > Actions):
+#   secret IRIX53_DISK_URL     URL to an installed IRIX 5.3 boot disk with the IDO
+#                              dev option — a bare `.chd` or a `.zip` containing one
+#                              (e.g. the ULTRA64 2GIG 5.3 image). Used by the o32 job.
+#   var    IRIX_TOOLCHAIN_IMAGE  container with a mips-sgi-irix gcc + IRIX sysroot
+#                              (sys/dsreq.h, invent.h, libc). Used by the n32 job.
+#                              Or pass the `irix_toolchain_image` dispatch input.
+#   var    IRIX_CC            cross-compiler name          [mips-sgi-irix6.5-gcc]
+#   var    IRIS_REPO / IRIS_REF   iris source to build     [chronic8000/iris @ main]
+#                              (IRIS_REF must be a branch or tag, not a bare SHA)
 
 on:
   workflow_dispatch:
     inputs:
       irix_toolchain_image:
         description: "Container image with a mips-sgi-irix gcc + IRIX sysroot (overrides the IRIX_TOOLCHAIN_IMAGE variable)"
+        required: false
+        default: ""
+      iris_repo:
+        description: "IRIS emulator source repo to build for the native o32 build (owner/name)"
+        required: false
+        default: ""
+      iris_ref:
+        description: "IRIS branch or tag to build"
         required: false
         default: ""
   push:
@@ -44,39 +66,46 @@ jobs:
             echo "version=$(date -u +%Y-%m-%d-%H-%M)" >> "$GITHUB_OUTPUT"
           fi
 
-  build-irix:
+  # o32 / IRIX 5.3: build iris from source, boot a real 5.3 disk, and compile
+  # natively over NFS. This is the long pole (iris build + IRIX boot + compile),
+  # so it runs in parallel with the cross job below.
+  build-o32-native:
     needs: version
     runs-on: ubuntu-latest
-    container:
-      image: ${{ github.event.inputs.irix_toolchain_image || vars.IRIX_TOOLCHAIN_IMAGE }}
     env:
-      IRIX_CC: ${{ vars.IRIX_CC || 'mips-sgi-irix6.5-gcc' }}
+      IRIS_REPO: ${{ github.event.inputs.iris_repo || vars.IRIS_REPO || 'chronic8000/iris' }}
+      IRIS_REF:  ${{ github.event.inputs.iris_ref  || vars.IRIS_REF  || 'main' }}
+      IRIX53_DISK_URL: ${{ secrets.IRIX53_DISK_URL }}
     steps:
       - uses: actions/checkout@v4
-      - name: Cross-compile o32 (5.3-6.5) and n32 (6.x)
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          # pkg-config + libasound2-dev: iris core. clang/libclang-dev: the chd
+          # feature (libchdman-rs bindgen). xkbcommon/wayland/gl: winit compile.
+          # mame-tools: provides chdman, needed to DHCP-enable a .chd boot disk.
+          sudo apt-get install -y \
+            pkg-config clang libclang-dev libasound2-dev \
+            libxkbcommon-dev libwayland-dev libgl-dev \
+            mame-tools unzip curl
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Clone IRIS source
+        run: git clone --depth 1 --branch "$IRIS_REF" "https://github.com/$IRIS_REPO" iris
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: iris
+
+      - name: Build iris + iris-ci (--features chd,lightning)
+        working-directory: iris
         run: |
           set -eux
-          # o32 ABI: one binary that runs across IRIX 5.3 - 6.5.
-          "$IRIX_CC" -DOS_IRIX -O2 -mabi=32 -mips2 -o bstoolbox-o32 bstoolbox.c irix.c
-          # n32 ABI: faster, IRIX 6.x only. Drop this line if the toolchain has no
-          # n32 multilib.
-          "$IRIX_CC" -DOS_IRIX -O2 -mabi=n32 -mips3 -o bstoolbox-n32 bstoolbox.c irix.c
-          file bstoolbox-o32 bstoolbox-n32 || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: irix-binaries
-          path: |
-            bstoolbox-o32
-            bstoolbox-n32
+          cargo build --release --bin iris --bin iris-ci --features chd,lightning
+          ls -la target/release/iris target/release/iris-ci
 
-  package:
-    needs: [version, build-irix]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: irix-binaries
       - name: Fetch latest rb-cli (linux-x64)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -88,32 +117,118 @@ jobs:
           tar xzf rb-cli.tar.gz
           chmod +x rb-cli
           ./rb-cli --version
-      - name: Build EFS CD + SGI HDD images
+
+      - name: Fetch + DHCP-enable the IRIX 5.3 boot disk
         run: |
           set -eux
-          # Package the o32 binary (the portable 5.3-6.5 build) into both images.
-          ./scripts/package-efs.sh \
-            --bin bstoolbox-o32 \
+          [ -n "$IRIX53_DISK_URL" ] || { echo "set the IRIX53_DISK_URL secret (5.3 boot-disk URL: .chd or a .zip with one)"; exit 1; }
+          curl -fsSL "$IRIX53_DISK_URL" -o disk.download
+          # Accept a bare .chd or a .zip that contains one.
+          if unzip -l disk.download >/dev/null 2>&1; then
+            unzip -o disk.download -d diskdir
+            chd=$(find diskdir -iname '*.chd' | head -1)
+          else
+            chd=disk.download
+          fi
+          [ -n "${chd:-}" ] && [ -s "$chd" ] || { echo "no .chd found in the downloaded asset"; exit 1; }
+          # iris runs with the iris dir as cwd; ci/iris-irix53.toml references
+          # irix53.chd relative to that, so drop the disk in there.
+          cp "$chd" iris/irix53.chd
+          RB_CLI=./rb-cli CHDMAN=chdman ./scripts/irix-enable-dhcp.sh iris/irix53.chd
+
+      - name: Native o32/5.3 build inside IRIS (over NFS)
+        run: |
+          set -eux
+          ./scripts/iris-build.sh \
+            --version "${{ needs.version.outputs.version }}" \
+            --iris-dir iris \
+            --rb-cli ./rb-cli \
+            --no-package \
+            --bin-out irixscsitb-o32
+          file irixscsitb-o32 || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: irix-o32
+          path: irixscsitb-o32
+
+  # n32 / IRIX 6.x: cross-compiled. GNU ld links 6.x's n32 libs correctly.
+  build-n32-cross:
+    needs: version
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ github.event.inputs.irix_toolchain_image || vars.IRIX_TOOLCHAIN_IMAGE }}
+    env:
+      IRIX_CC: ${{ vars.IRIX_CC || 'mips-sgi-irix6.5-gcc' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cross-compile n32 (6.x)
+        run: |
+          set -eux
+          "$IRIX_CC" -DOS_IRIX -O2 -mabi=n32 -mips3 -o irixscsitb-n32 irixscsitb.c irix.c
+          file irixscsitb-n32 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: irix-n32
+          path: irixscsitb-n32
+
+  package:
+    needs: [version, build-o32-native, build-n32-cross]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: irix-o32
+      - uses: actions/download-artifact@v4
+        with:
+          name: irix-n32
+      - name: Fetch latest rb-cli (linux-x64)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          url=$(gh api repos/danifunker/rusty-backup/releases/latest \
+            --jq '.assets[] | select(.name|test("^rb-cli-linux-x64-.*\\.tar\\.gz$")) | .browser_download_url')
+          curl -fsSL "$url" -o rb-cli.tar.gz
+          tar xzf rb-cli.tar.gz
+          chmod +x rb-cli
+          ./rb-cli --version
+      - name: Build .iso + .hda + .tar.gz artifacts
+        run: |
+          set -eux
+          # o32 (native 5.3-6.5 build) goes into the images and the tarball; the
+          # cross-built n32 is added to the tarball too.
+          ./scripts/package.sh \
+            --bin irixscsitb-o32 \
+            --tar-bin irixscsitb-n32 \
             --version "${{ needs.version.outputs.version }}" \
             --outdir dist \
             --rb-cli ./rb-cli \
             --extra README.md
       - uses: actions/upload-artifact@v4
         with:
-          name: efs-images
-          path: dist/*.img
+          name: dist-images
+          path: |
+            dist/*.iso
+            dist/*.hda
+            dist/*.tar.gz
 
   release:
-    needs: [version, build-irix, package]
+    needs: [version, build-o32-native, build-n32-cross, package]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: irix-binaries
+          name: irix-o32
           path: dist
       - uses: actions/download-artifact@v4
         with:
-          name: efs-images
+          name: irix-n32
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-images
           path: dist
       - name: Create GitHub release
         env:
@@ -123,6 +238,6 @@ jobs:
           ls -la dist
           gh release create "v${{ needs.version.outputs.version }}" \
             --repo "${{ github.repository }}" \
-            --title "bstoolbox ${{ needs.version.outputs.version }}" \
-            --notes "Automated release: IRIX o32/n32 binaries + EFS CD and SGI EFS HDD images for the IRIS emulator." \
+            --title "irixscsitb ${{ needs.version.outputs.version }}" \
+            --notes "Automated release: IRIX o32 (native 5.3 build) + n32 binaries, plus .iso (EFS CD-ROM), .hda (SGI EFS hard disk), and .tar.gz (binaries + README, for NFS/direct copy) for the IRIS emulator and real BlueSCSI/SGI hardware." \
             dist/*

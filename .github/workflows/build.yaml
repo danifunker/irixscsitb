@@ -1,4 +1,4 @@
-name: Build bstoolbox
+name: Build irixscsitb
 on: [push]
 jobs:
   build:

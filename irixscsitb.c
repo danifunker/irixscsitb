@@ -1,42 +1,83 @@
 /*
- * BlueSCSI v2 IRIX and Linux toolbox
+ * irixscsitb - toolbox for emulated SCSI devices (BlueSCSI / ZuluSCSI)
+ * on SGI IRIX and Linux hosts.
+ *
+ * Speaks the BlueSCSI/ZuluSCSI Toolbox API (vendor commands 0xD0-0xDA): list
+ * and transfer files in the device's shared directory, list and swap CD images,
+ * enumerate emulated targets and toggle firmware debug logging.
+ *
+ * Firmware-neutral by design: devices are recognised by the toolbox API they
+ * implement, not by which product they claim to be. See toolbox_firmware_ids[]
+ * and toolbox_confirm() for how a target is accepted.
+ *
+ * Copyright (C) 2024-2025 SonnyJim
+ * Copyright (C) 2025 Daniel Palmer
+ * Copyright (C) 2026 Dani Sarfati
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-#include "bstoolbox.h"
+#include "irixscsitb.h"
+
+/* Forward declaration: the definition lives further down, but toolbox_listcds
+ * (which precedes it in this file) now needs it. */
+static long int size_to_long(const unsigned char size[5]);
+
+/*
+ * Are we effectively root? The generic SCSI device nodes are normally mode 0600
+ * root-owned, so anything short of uid 0 will fail at open(). We ask the system
+ * (geteuid) rather than telling every user to "make sure you run as root" -
+ * that advice is only worth printing when it actually applies.
+ */
+static int running_as_root(void)
+{
+	return geteuid() == 0;
+}
 
 /*
  * Sending Files
  * Sending files from the Host to the SD card is a three-step process:
  *
- * BLUESCSI_TOOLBOX_SEND_FILE_PREP 0xD3 to prepare a file on the SD card for receiving.
- * BLUESCSI_TOOLBOX_SEND_FILE_10 0xD4 to send the actual data of the file.
- * BLUESCSI_TOOLBOX_SEND_FILE_END 0xD5 to close the file.
+ * TOOLBOX_SEND_FILE_PREP 0xD3 to prepare a file on the SD card for receiving.
+ * TOOLBOX_SEND_FILE_10 0xD4 to send the actual data of the file.
+ * TOOLBOX_SEND_FILE_END 0xD5 to close the file.
  */
 
 /*
- * LUESCSI_TOOLBOX_SEND_FILE_PREP 0xD3
+ * TOOLBOX_SEND_FILE_PREP 0xD3
  * Prepares a file on the SD card in the ToolBoxSharedDir (Default /shared) for receiving.
  *
  * The file name is 33 char name sent in the SCSI data, null terminated. The name should only contain valid characters for file names on FAT32/ExFAT.
  *
  * If the file is not able to be created a CHECK_CONDITION ILLEGAL_REQUEST is set as the sense.
  *
- * BLUESCSI_TOOLBOX_SEND_FILE_10 0xD4
+ * TOOLBOX_SEND_FILE_10 0xD4
  * Receive data from the host in blocks of 512 bytes.
  *
  * CDB[1..2] - Number of bytes sent in this request. Big endian. Minimum 1, maximum 512.
  *
  * CDB[3..5] - Block number in the file for these bytes. Big endian.
  *
- * If the file has a write error sense will be set as CHECK_CONDITION ILLEGAL_REQUEST. You may try to resend the block or fail and call BLUESCSI_TOOLBOX_SEND_FILE_END
+ * If the file has a write error sense will be set as CHECK_CONDITION ILLEGAL_REQUEST. You may try to resend the block or fail and call TOOLBOX_SEND_FILE_END
  *
  * NOTE: The number of bytes sent should be 512 in all but the final block of the file.
  *
- * BLUESCSI_TOOLBOX_SEND_FILE_END 0xD5
+ * TOOLBOX_SEND_FILE_END 0xD5
  * Once the file is completely sent this command will close the file.
  */
-static int bluescsi_sendfile(int dev, char *path)
+static int toolbox_sendfile(int dev, char *path)
 {
-	char cmd[10] = { BLUESCSI_TOOLBOX_SEND_FILE_PREP, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+	char cmd[10] = { TOOLBOX_SEND_FILE_PREP, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 	char filename[NAME_BUF_SIZE];
 	char *base_name;
 	char send_buf[SEND_BUF_SIZE];
@@ -60,7 +101,7 @@ static int bluescsi_sendfile(int dev, char *path)
 	if (base_name == NULL) {
 		base_name = path;
 	} else {
-		base_name++; // skip the slash
+		base_name++; /* skip the slash */
 	}
 
 	if (strlen(base_name) >= NAME_BUF_SIZE) {
@@ -71,7 +112,7 @@ static int bluescsi_sendfile(int dev, char *path)
 	memset(filename, 0, NAME_BUF_SIZE);
 	strncpy(filename, base_name, NAME_BUF_SIZE - 1);
 
-	// Open file
+	/* Open file */
 	fd = fopen(path, "rb");
 	if (fd == NULL) {
 		fprintf(stderr, "Error: sendfile couldn't open %s\n", path);
@@ -88,15 +129,15 @@ static int bluescsi_sendfile(int dev, char *path)
 	}
 	filesize = st.st_size;
 
-	// Send filename
+	/* Send filename */
 	if (scsi_send_commandw(dev, (unsigned char *)cmd, SCSI_CMD_LENGTH, (unsigned char *)filename, 33) != 0) {
 		fprintf(stderr, "Error: sendfileprep failed - %s\n", strerror(errno));
 		fclose(fd);
 		return 1;
 	}
 
-	// Prepare to send file data
-	cmd[0] = BLUESCSI_TOOLBOX_SEND_FILE_10;
+	/* Prepare to send file data */
+	cmd[0] = TOOLBOX_SEND_FILE_10;
 
 	while (bytes_read < filesize) {
 		chunk = (filesize - bytes_read) < SEND_BUF_SIZE ? (filesize - bytes_read) : SEND_BUF_SIZE;
@@ -127,9 +168,9 @@ static int bluescsi_sendfile(int dev, char *path)
 		buf_idx++;
 	}
 
-	// Send file end command
+	/* Send file end command */
 	memset(cmd, 0, sizeof(cmd));
-	cmd[0] = BLUESCSI_TOOLBOX_SEND_FILE_END;
+	cmd[0] = TOOLBOX_SEND_FILE_END;
 
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), NULL, 0) != 0) {
 		fprintf(stderr, "Error: sendfileend failed - %s\n", strerror(errno));
@@ -143,7 +184,7 @@ static int bluescsi_sendfile(int dev, char *path)
 
 
 /*
- * BLUESCSI_TOOLBOX_TOGGLE_DEBUG 0xD6
+ * TOOLBOX_TOGGLE_DEBUG 0xD6
  * Enable or disable Debug logs. Also allows you to get the current status.
  *
  * If CDB[1] is set to 0 it is the subcommand Set Debug. The value of CDB[2] is used as the boolean value for the debug flag.
@@ -153,12 +194,12 @@ static int bluescsi_sendfile(int dev, char *path)
  * NOTE: Debug logs significantly decrease performance while enabled. When your app enables debug you MUST notify them of the decreased performance.
  */
 
-static int bluescsi_getdebug (int dev)
+static int toolbox_getdebug (int dev)
 {
 	int ret;
-	char cmd[10] = {BLUESCSI_TOOLBOX_TOGGLE_DEBUG, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
+	char cmd[10] = {TOOLBOX_TOGGLE_DEBUG, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
 	char buf[1];
-	cmd[1] = DEBUG_GET;//Get debug flag
+	cmd[1] = DEBUG_GET;/*Get debug flag */
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
 	{
@@ -169,9 +210,9 @@ static int bluescsi_getdebug (int dev)
 	return ret;
 }
 
-static int bluescsi_setdebug (int dev, int value)
+static int toolbox_setdebug (int dev, int value)
 {
-	char cmd[10] = {BLUESCSI_TOOLBOX_TOGGLE_DEBUG, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+	char cmd[10] = {TOOLBOX_TOGGLE_DEBUG, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 	
 	if (value > 1)
 		value = 1;
@@ -181,25 +222,25 @@ static int bluescsi_setdebug (int dev, int value)
 	cmd[2] = value;
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)NULL, 0) != 0)
 	{
-		fprintf (stderr, "Error: BlueSCSI setdebug failed - %s\n", strerror(errno));
+		fprintf (stderr, "Error: setdebug failed - %s\n", strerror(errno));
 		return -1;
 	}
 
 	if (verbose)
-		fprintf (stdout, "Debug mode set to: %i\n", bluescsi_getdebug (dev));
+		fprintf (stdout, "Debug mode set to: %i\n", toolbox_getdebug (dev));
 	return 0;
 }
 
 /*
- * BLUESCSI_TOOLBOX_COUNT_FILES 0xD2
+ * TOOLBOX_COUNT_FILES 0xD2
  * Counts the number of files in the ToolBoxSharedDir (default /shared). The purpose is to allow the host program to know how much data will be sent back by the List files function.
  *
- * This can be sent to any valid BlueSCSI target.
+ * This can be sent to any valid toolbox target.
  */
 
-static int bluescsi_countfiles(int dev)
+static int toolbox_countfiles(int dev)
 {
-	char cmd[10] = {BLUESCSI_TOOLBOX_COUNT_FILES, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
+	char cmd[10] = {TOOLBOX_COUNT_FILES, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
 	char buf[1];
 	int ret;
 	memset(buf, 0, sizeof(buf));
@@ -208,7 +249,7 @@ static int bluescsi_countfiles(int dev)
 		fprintf (stderr, "Error: countfiles failed - %s\n", strerror(errno));
 		return -1;
 	}
-	ret = buf[0]; //Maximum of 100 files 
+	ret = buf[0]; /*Maximum of 100 files  */
 	return ret;
 }
 
@@ -218,9 +259,9 @@ static int bluescsi_countfiles(int dev)
  * Output:
  *  Single byte indicating number of CD images available. (Max 100.)
  */
-static int bluescsi_countcds(int dev)
+static int toolbox_countcds(int dev)
 {
-	char cmd[10] = {BLUESCSI_TOOLBOX_COUNT_CDS, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
+	char cmd[10] = {TOOLBOX_COUNT_CDS, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
 	char buf[1];
 	int ret;
 	memset(buf, 0, sizeof(buf));
@@ -229,7 +270,7 @@ static int bluescsi_countcds(int dev)
 		fprintf (stderr, "Error: countcds failed - %s\n", strerror(errno));
 		return -1;
 	}
-	ret = buf[0]; //Maximum of 100 files
+	ret = buf[0]; /*Maximum of 100 files */
 	if (ret < 0 || ret > MAX_FILES)
 	{
 		fprintf (stderr,"Error: countcds invalid count %i\n", ret);
@@ -245,13 +286,13 @@ static int bluescsi_countcds(int dev)
  * Output:
  *  None.
  */
-static int bluescsi_setnextcd(int dev, int num)
+static int toolbox_setnextcd(int dev, int num)
 {
 	int max_cds;
 	char cmd[10];
 	memset(cmd, 0, sizeof(cmd));	
-	max_cds = bluescsi_countcds(dev);
-	cmd[0] = BLUESCSI_TOOLBOX_SET_NEXT_CD;
+	max_cds = toolbox_countcds(dev);
+	cmd[0] = TOOLBOX_SET_NEXT_CD;
 
 	if (num < 0 || num > max_cds)
 	{
@@ -270,28 +311,31 @@ static int bluescsi_setnextcd(int dev, int num)
 	return 0;
 }
 /*
- * BLUESCSI_TOOLBOX_LIST_CDS 0xD7
+ * TOOLBOX_LIST_CDS 0xD7
  * Lists all the files for the current directory for the selected SCSI ID target. Eg: When selecting SCSI ID 3 it will look for a CD3 folder and list files from there. The structure is ToolboxFileEntry.
  *
  * NOTE: Since there is no universal name for a CD image there is no filtering done on the lists of files.
  */
-static int bluescsi_listcds(int dev)
+static int toolbox_listcds(int dev)
 {
-	char cmd[10] = {BLUESCSI_TOOLBOX_MODE_CDS, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+	char cmd[10] = {TOOLBOX_LIST_CDS, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 	char *buf;
-	int i, j;
+	int i;
 	int buf_size;
 	int num_cds;
+	ToolboxFileEntry entry;
 
-	num_cds = bluescsi_countcds (dev);
+	num_cds = toolbox_countcds (dev);
 	if (num_cds < 0 || num_cds > MAX_FILES)
 	{
 		fprintf (stderr, "Error:  CD number requested invalid: %i\n", num_cds);
 		return -1;
 	}
 	fprintf (stdout, "Found %i CDs\n", num_cds);
+	if (num_cds == 0)
+		return 0;
+
 	buf_size = sizeof(ToolboxFileEntry) * num_cds;
-	
 	buf = (char *)malloc(buf_size);
 	if (buf == NULL)
 	{
@@ -303,29 +347,24 @@ static int bluescsi_listcds(int dev)
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, buf_size) != 0)
 	{
 		fprintf (stderr, "Error: listcds failed - %s\n", strerror(errno));
+		free(buf);
 		return -1;
 	}
-	j = 0;
-	for (i=0;i<buf_size;i++)
-	{
 
-		if (j == 0 )
-			fprintf (stdout, "#%i ", (buf[i]));
-		if (j >= 2 && j <= 34)
-			fprintf (stdout, "%c", buf[i]);
-		j++;
-		if (j >= sizeof(ToolboxFileEntry))
-		{
-			j = 0;
-			fprintf (stdout, "\n");
-		}
-	//	fprintf (stdout, "%02x",buf[i]);
+	/* Parse the packed ToolboxFileEntry array the same way listfiles does, so
+	 * CD listings show index, name and size instead of a raw byte dump. */
+	for (i = 0; i < num_cds; i++)
+	{
+		memcpy(&entry, buf + i * sizeof(ToolboxFileEntry), sizeof(ToolboxFileEntry));
+		entry.name[sizeof(entry.name) - 1] = '\0';
+		fprintf (stdout, "#%i %s%s %li bytes\n", entry.index, entry.name,
+			entry.type == 1 ? "/" : "", size_to_long(entry.size));
 	}
-	fprintf (stdout, "\n");
-	return 1;
+	free(buf);
+	return 0;
 }
 
-//Helper function to convert 40bit size into a long
+/*Helper function to convert 40bit size into a long */
 static long int size_to_long(const unsigned char size[5])
 {
     int i;
@@ -343,23 +382,23 @@ static long int size_to_long(const unsigned char size[5])
  *
  * To receive files
  *
- * Count and list the files with BLUESCSI_TOOLBOX_COUNT_FILES 0xD2 and BLUESCSI_TOOLBOX_LIST_FILES 0xD0.
- * Use the file index and byte offset to transfer the desired file with BLUESCSI_TOOLBOX_GET_FILE 0xD1.
+ * Count and list the files with TOOLBOX_COUNT_FILES 0xD2 and TOOLBOX_LIST_FILES 0xD0.
+ * Use the file index and byte offset to transfer the desired file with TOOLBOX_GET_FILE 0xD1.
  *
  */
 
 
 /*
- * BLUESCSI_TOOLBOX_LIST_FILES 0xD0
+ * TOOLBOX_LIST_FILES 0xD0
  * Returns a list of files in the ToolBoxSharedDir (Default /shared) in a ToolboxFileEntry struct
  * NOTE: File names are truncated to 32 chars - but can still be transferred. 
  * NOTE: You may need to convert characters that are valid file names on FAT32/ExFat to support the hosts native character encoding and file name limitations. 
  * NOTE: Currently the response is limited to 100 entries, Will return 
  * NOTE: BlueSCSI only transfers as many entries as are actually present. You should request the file count first, then size your receive buffer to match that number of entries.
  */
-static int bluescsi_listfiles(int dev, int print)
+static int toolbox_listfiles(int dev, int print)
 {
-	char cmd[10] = {BLUESCSI_TOOLBOX_MODE_FILES, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+	char cmd[10] = {TOOLBOX_LIST_FILES, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 	char *buf;
 	int i;
 	int buf_size;
@@ -368,7 +407,7 @@ static int bluescsi_listfiles(int dev, int print)
 	if (verbose)
 		fprintf (stdout, "Listing files on %i\n", dev);
 
-	num_files = bluescsi_countfiles (dev);
+	num_files = toolbox_countfiles (dev);
 	if (num_files < 0 || num_files > MAX_FILES)
 	{
 		fprintf (stderr, "Error: listfiles num_files invalid: %i", num_files);
@@ -392,7 +431,7 @@ static int bluescsi_listfiles(int dev, int print)
 		fprintf (stderr, "Error: listfiles failed - %s\n", strerror(errno));
 		return -1;
 	}
-	//Copy SCSI data to global files var	
+	/*Copy SCSI data to global files var	 */
 	for (i = 0; i < num_files; i++) {
 		memcpy(&files[i], buf + i * sizeof(ToolboxFileEntry), sizeof(ToolboxFileEntry));
 		files[i].name[sizeof(files[i].name) - 1] = '\0';
@@ -405,7 +444,7 @@ static int bluescsi_listfiles(int dev, int print)
 	return 0;
 }
 /*
- * BLUESCSI_TOOLBOX_GET_FILE 0xD1
+ * TOOLBOX_GET_FILE 0xD1
  * Transfers a file from the ToolBoxSharedDir (Default /shared) to the Host computer.
  *
  * CDB[1] contains the index of the file to transfer.
@@ -413,7 +452,7 @@ static int bluescsi_listfiles(int dev, int print)
  * CDB[2..5] contains the offset in the file in 4096 byte blocks. Big endian.
  */
 
-static int bluescsi_getfile(int dev, int idx, char *outdir)
+static int toolbox_getfile(int dev, int idx, char *outdir)
 {
 	char cmd[10];
 	char buf[MAX_DATA_LEN];
@@ -427,14 +466,14 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 
 
 	memset(cmd, 0, sizeof(cmd));
-	cmd[0] = BLUESCSI_TOOLBOX_GET_FILE;
+	cmd[0] = TOOLBOX_GET_FILE;
 	cmd[1] = idx;
-	cmd[2] = 0; //Index offset in MAX_DATA_LEN blocks
+	cmd[2] = 0; /*Index offset in MAX_DATA_LEN blocks */
 
-	if (strlen (outdir) < 2)//Default to current directory
+	if (strlen (outdir) < 2)/*Default to current directory */
 		strcpy (outdir, "./");
-	//We need to populate the files struct first before doing anything else
-	if (bluescsi_listfiles (dev, 0) != 0)
+	/*We need to populate the files struct first before doing anything else */
+	if (toolbox_listfiles (dev, 0) != 0)
 	{
 		fprintf (stderr, "Error: getfile couldn't listfiles\n");
 		return -1;
@@ -470,7 +509,7 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 	filesize = size_to_long (files[idx].size);
 	max_blocks = (filesize / MAX_DATA_LEN) + 2;
 
-	//Read the data from the SCSI bus and store to disk
+	/*Read the data from the SCSI bus and store to disk */
 	while (1)
 	{
 		if ((long int)blk_idx > max_blocks)
@@ -496,16 +535,16 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 			break;
 		}
 
-		//Check to see if we are on the last chunk
+		/*Check to see if we are on the last chunk */
 		if (bytes_left < MAX_DATA_LEN)
 		{
 			bytes_written += fwrite (buf, sizeof(unsigned char), bytes_left, fd);
 			break;
 		}
-		//Otherwise write the chunk and move onto the next one
+		/*Otherwise write the chunk and move onto the next one */
 		bytes_written += fwrite (buf, sizeof(unsigned char), MAX_DATA_LEN, fd);
 
-		//increment the offset
+		/*increment the offset */
 		blk_idx++;
 		cmd[2] = (unsigned char)(blk_idx >> 24) & 0xFF;
 		cmd[3] = (unsigned char)(blk_idx >> 16) & 0xFF;
@@ -524,16 +563,16 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
  *  8 bytes, each indicating the device type of the emulated SCSI devices
  *           or 0xFF for not-enabled targets
  */
-static int bluescsi_listdevices(int dev, char **outbuf)
+static int toolbox_listdevices(int dev, char **outbuf)
 {
-	char cmd[10] = {BLUESCSI_TOOLBOX_MODE_DEVICES, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+	char cmd[10] = {TOOLBOX_LIST_DEVICES, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 	char buf[8];
 	*outbuf = NULL;
 
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
 	{
-		fprintf (stderr, "Error: BlueSCSI listdevices failed - %s\n", strerror(errno));
+		fprintf (stderr, "Error: listdevices failed - %s\n", strerror(errno));
 		return -1;
 	}
 	*outbuf = (char *)calloc(sizeof(buf), sizeof(char));
@@ -545,18 +584,64 @@ static int bluescsi_listdevices(int dev, char **outbuf)
 		return -1;
 }
 
+/* Human-readable name for a device-type byte from the 0xD9 map. Masked to a
+ * byte so a sign-extended 0xFF (TYPE_NONE) still matches on signed-char hosts. */
+static const char *dev_type_name(int t)
+{
+	switch (t & 0xFF)
+	{
+	case TYPE_HDD:        return "HDD";
+	case TYPE_REMOVABLE:  return "Removable";
+	case TYPE_CD:         return "CD";
+	case TYPE_FLOPPY:     return "Floppy";
+	case TYPE_MO:         return "Magneto-optical";
+	case TYPE_SEQUENTIAL: return "Tape";
+	case TYPE_NETWORK:    return "Network";
+	case TYPE_ZIP100:     return "Zip100";
+	case TYPE_NONE:       return "not enabled";
+	default:              return "unknown";
+	}
+}
+
 /*
- * Identifiers we accept as a toolbox-capable target. Matched (case-sensitive
- * substring) against the INQUIRY identity AND the MODE SENSE page 0x31 content:
- *   "BlueSCSI"       - real BlueSCSI firmware appends "BlueSCSI<ver>" to
- *                      product_rev and stamps it into the page 0x31 vendor page.
- *   "IRIS EMUL DISK" - the IRIS emulator's INQUIRY product field (bytes 16-31);
- *                      its full identity is vendor "SGI", product
- *                      "IRIS EMUL DISK", revision "1.0".
- * Add new entries here to extend acceptance.
+ * Print the 8-byte device-type map (0xD9) as a readable table of the emulated
+ * SCSI targets, one line per ID 0-7. Works on any accepted toolbox target and
+ * does not require the target to be a CD.
  */
-static const char *toolbox_accept_ids[] = { "BlueSCSI", "IRIS EMUL DISK" };
-#define N_ACCEPT_IDS (int)(sizeof(toolbox_accept_ids) / sizeof(toolbox_accept_ids[0]))
+static int toolbox_printdevices(int dev)
+{
+	char *dev_flags;
+	int i;
+
+	if (toolbox_listdevices(dev, &dev_flags) != 0)
+	{
+		fprintf (stderr, "Error: couldn't fetch device-type map (0xD9): %s\n", strerror(errno));
+		free(dev_flags);
+		return -1;
+	}
+
+	fprintf (stdout, "Emulated SCSI targets:\n");
+	for (i = 0; i < 8; i++)
+		fprintf (stdout, "  ID %i: %s\n", i, dev_type_name((unsigned char)dev_flags[i]));
+
+	free(dev_flags);
+	return 0;
+}
+
+/*
+ * FIRMWARE names we recognise as advertising the toolbox API. Both BlueSCSI and
+ * ZuluSCSI stamp their name into the vendor-specific area of INQUIRY starting at
+ * byte 36 (which our product_rev field spans), and BlueSCSI also stamps it into
+ * the MODE SENSE page 0x31 vendor page.
+ *
+ * These are deliberately FIRMWARE identifiers, never emulated-device model
+ * names: a model name like "IRIS EMUL DISK" says what a device pretends to be,
+ * not whether it implements commands 0xD0-0xDA. Self-identification alone is
+ * never enough here either - toolbox_confirm() below has to get a real answer
+ * out of the device before we treat it as toolbox-capable.
+ */
+static const char *toolbox_firmware_ids[] = { "BlueSCSI", "ZuluSCSI" };
+#define N_ACCEPT_IDS (int)(sizeof(toolbox_firmware_ids) / sizeof(toolbox_firmware_ids[0]))
 
 /* Substring search that tolerates embedded NULs (MODE SENSE data and the
  * vendor page both contain 0x00 bytes, so strstr() would stop early). */
@@ -578,79 +663,235 @@ static int buf_contains(const unsigned char *hay, int haylen, const char *needle
  * vendor page 0x31 and look for an accepted magic string. This is how the IRIS
  * emulator (whose INQUIRY is a plain SGI disk) advertises toolbox support, and
  * how a real BlueSCSI advertises it via the "BlueSCSIVendorPage".
+ * With probe non-zero the command is sent quietly and without retries (bus
+ * scanning, where most targets legitimately reject this page).
  * Returns 0 if an accepted id is present in the page, -1 otherwise.
  */
-static int bluescsi_modesense_toolbox(int dev)
+static int toolbox_modesense_page31(int dev, int probe)
 {
 	unsigned char cmd[6];
 	unsigned char buf[96];
+	int ret;
 	int i;
 
 	memset(cmd, 0, sizeof(cmd));
 	cmd[0] = SCSI_MODE_SENSE_6;
 	cmd[1] = 0x08;                  /* DBD: suppress block descriptors */
-	cmd[2] = BLUESCSI_VENDOR_PAGE;  /* PC=current, page code 0x31 */
+	cmd[2] = TOOLBOX_VENDOR_PAGE;  /* PC=current, page code 0x31 */
 	cmd[4] = sizeof(buf);           /* allocation length */
 
 	memset(buf, 0, sizeof(buf));
-	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
+	if (probe)
+		ret = scsi_send_command_probe(dev, cmd, sizeof(cmd), buf, sizeof(buf));
+	else
+		ret = scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf));
+	if (ret != 0)
 		return -1;              /* page unsupported or command failed */
 
 	for (i = 0; i < N_ACCEPT_IDS; i++)
-		if (buf_contains(buf, sizeof(buf), toolbox_accept_ids[i]))
+		if (buf_contains(buf, sizeof(buf), toolbox_firmware_ids[i]))
 			return 0;
 	return -1;
 }
 
-//Interrogate the device and find out it's capabilties
-static int bluescsi_inquiry(int dev, int print)
+/*
+ * Send INQUIRY (0x12) and parse the reply into inq. If raw is non-NULL the
+ * unparsed reply is copied there too (the toolbox API-version byte is read from
+ * it). With probe non-zero the command is sent quietly and without retries.
+ * Prints nothing itself. Returns 0 on success, -1 on failure.
+ */
+static int scsi_read_inquiry(int dev, scsi_inquiry *inq, unsigned char *raw, int rawlen, int probe)
 {
-	char cmd[] ={SCSI_INQUIRY, 0, 0, 0, sizeof(scsi_inquiry), 0};
-	char buf[sizeof(scsi_inquiry)];
+	unsigned char cmd[6];
+	unsigned char buf[sizeof(scsi_inquiry)];
+	int ret;
+	int n;
+
+	memset(cmd, 0, sizeof(cmd));
+	cmd[0] = SCSI_INQUIRY;
+	cmd[4] = sizeof(scsi_inquiry);  /* allocation length (66) */
+
+	memset(buf, 0, sizeof(buf));
+	if (probe)
+		ret = scsi_send_command_probe(dev, cmd, sizeof(cmd), buf, sizeof(buf));
+	else
+		ret = scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf));
+	if (ret != 0)
+		return -1;
+
+	memset(inq, 0, sizeof(scsi_inquiry));
+	inq->dev_type   = buf[0];
+	inq->version    = buf[2];
+	inq->add_length = buf[4];
+	memcpy(inq->vendor_id, &buf[8], sizeof(inq->vendor_id) - 1);
+	inq->vendor_id[sizeof(inq->vendor_id) - 1] = '\0';
+	memcpy(inq->product_id, &buf[16], sizeof(inq->product_id) - 1);
+	inq->product_id[sizeof(inq->product_id) - 1] = '\0';
+	memcpy(inq->product_rev, &buf[32], sizeof(inq->product_rev) - 1);
+	inq->product_rev[sizeof(inq->product_rev) - 1] = '\0';
+
+	if (raw != NULL && rawlen > 0) {
+		n = rawlen < (int)sizeof(buf) ? rawlen : (int)sizeof(buf);
+		memcpy(raw, buf, n);
+	}
+	return 0;
+}
+
+/*
+ * Append src to out with src's trailing spaces dropped. INQUIRY fields are
+ * space-padded to their full width, which would otherwise leave ragged gaps in
+ * the middle of the identity string.
+ */
+static void append_trimmed(char *out, int outlen, const char *src)
+{
+	int len = (int)strlen(src);
+	int used = (int)strlen(out);
+	int i;
+
+	while (len > 0 && src[len - 1] == ' ')
+		len--;
+	for (i = 0; i < len && used < outlen - 1; i++)
+		out[used++] = src[i];
+	out[used] = '\0';
+}
+
+/* Build the "<vendor> <product> <rev>" string matched against the accept list. */
+static void inquiry_identity(const scsi_inquiry *inq, char *out, int outlen)
+{
+	if (outlen <= 0)
+		return;
+	out[0] = '\0';
+	append_trimmed(out, outlen, inq->vendor_id);
+	if ((int)strlen(out) < outlen - 1)
+		strcat(out, " ");
+	append_trimmed(out, outlen, inq->product_id);
+	if ((int)strlen(out) < outlen - 1)
+		strcat(out, " ");
+	append_trimmed(out, outlen, inq->product_rev);
+}
+
+/*
+ * Does this INQUIRY identity carry a known toolbox FIRMWARE name (byte 36+)?
+ * Returns the matching entry from toolbox_firmware_ids[], or NULL.
+ */
+static const char *identity_accepted(const char *identity)
+{
+	int i;
+
+	for (i = 0; i < N_ACCEPT_IDS; i++)
+		if (strstr(identity, toolbox_firmware_ids[i]) != NULL)
+			return toolbox_firmware_ids[i];
+	return NULL;
+}
+
+/*
+ * Functional proof that a device really implements the toolbox: issue
+ * TOOLBOX_LIST_DEVICES (0xD9) and require a plausible 8-byte device-type map
+ * back. Anything that merely *claims* toolbox support in its INQUIRY string
+ * still has to answer this - which is what stops a device that only emulates a
+ * disk (e.g. an emulator presenting a plain SGI drive) from being reported as
+ * toolbox-capable when it does not implement 0xD0-0xDA at all.
+ *
+ * A valid map holds only real device-type codes (0x00-0x07) or 0xFF for
+ * "target not enabled", and must enable at least one target - random data or a
+ * stream of zeros from a device that ignored the opcode fails that test.
+ *
+ * On success the map is copied into device_list[] (used to gate CD operations).
+ * With probe non-zero the command is sent quietly and without retries.
+ * Returns 0 if confirmed, -1 otherwise.
+ */
+static int toolbox_confirm(int dev, int probe)
+{
+	unsigned char cmd[10];
+	unsigned char buf[8];
+	int ret;
+	int i;
+	int enabled = 0;
+
+	memset(cmd, 0, sizeof(cmd));
+	cmd[0] = TOOLBOX_LIST_DEVICES;
+
+	memset(buf, 0, sizeof(buf));
+	if (probe)
+		ret = scsi_send_command_probe(dev, cmd, sizeof(cmd), buf, sizeof(buf));
+	else
+		ret = scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf));
+	if (ret != 0)
+		return -1;
+
+	for (i = 0; i < 8; i++) {
+		if (buf[i] == TYPE_NONE)
+			continue;
+		if (buf[i] > TOOLBOX_DEVTYPE_MAX)
+			return -1;      /* not a device-type map at all */
+		enabled++;
+	}
+	if (enabled == 0)
+		return -1;              /* nothing enabled: not a real answer */
+
+	for (i = 0; i < 8; i++)
+		device_list[i] = buf[i];
+	return 0;
+}
+
+/* SCSI peripheral device type, INQUIRY byte 0 bits 0-4 (not the 0xD9 map). */
+static const char *inquiry_pdt_name(unsigned char b0)
+{
+	switch (b0 & 0x1F)
+	{
+	case 0x00: return "Disk";
+	case 0x01: return "Tape";
+	case 0x02: return "Printer";
+	case 0x03: return "Proc";
+	case 0x04: return "WORM";
+	case 0x05: return "CD-ROM";
+	case 0x06: return "Scanner";
+	case 0x07: return "Optical";
+	case 0x08: return "Changer";
+	case 0x09: return "Comms";
+	case 0x1F: return "Unknown";
+	default:   return "Other";
+	}
+}
+
+/* Interrogate the device and find out its capabilities */
+static int toolbox_inquiry(int dev, int print)
+{
+	unsigned char buf[sizeof(scsi_inquiry)];
 	char identity[64];
+	const char *match;
 	int accepted = 0;
 	scsi_inquiry inq;
 	int i;
-	char* dev_flags;
 	int additional_len;
 	int total_len;
 	int toolbox_api_version;
 
-	memset(buf, 0, sizeof(buf));
-	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
+	if (scsi_read_inquiry(dev, &inq, buf, sizeof(buf), 0) != 0)
 	{
 		fprintf (stderr, "Error: inquiry command failed - %s\n", strerror(errno));
 		return 1;
 	}
-	//Clear and fill the buffer with the inquiry data
-	memset (&inq, 0, sizeof(scsi_inquiry));
-	memcpy (&inq.version, &buf[2], 1);
-	memcpy (&inq.vendor_id, &buf[8], sizeof(inq.vendor_id) - 1);
-	inq.vendor_id[sizeof(inq.vendor_id) - 1] = '\0';
-	memcpy (&inq.product_id, &buf[16], sizeof(inq.product_id) - 1);
-	inq.product_id[sizeof(inq.product_id) - 1] = '\0';
-	memcpy (&inq.product_rev, &buf[32], sizeof(inq.product_rev) - 1);
-	inq.product_rev[sizeof(inq.product_rev) - 1] = '\0';
 
 	if (verbose || print)
 	{
 		fprintf (stdout, "SCSI version: %i\n", inq.version);
 		fprintf (stdout, "vendor_id: %s \nproduct_id: %s\n", inq.vendor_id, inq.product_id);
 		fprintf (stdout, "product_rev: %s\n", inq.product_rev);
-		fprintf (stdout, "debug mode: %i\n", bluescsi_getdebug(dev));
+		fprintf (stdout, "debug mode: %i\n", toolbox_getdebug(dev));
 	}
-	// Print the Toolbox API version if the extended data is present
-	additional_len = buf[4]; //offset 4 contains how much extra data is in the packet
+	/* Print the Toolbox API version if the extended data is present */
+	additional_len = buf[4]; /*offset 4 contains how much extra data is in the packet */
 	total_len = additional_len + 5;
 
-	if (total_len <= sizeof(buf)) {
+	if (total_len <= (int)sizeof(buf)) {
 		toolbox_api_version = buf[total_len - 1];
 		if (verbose)
 			fprintf(stdout, "Toolbox API version: %u\n", toolbox_api_version);
 
-		if (toolbox_api_version < BLUESCSI_TOOLBOX_API_VER) {
-			fprintf(stdout, "Toolbox API version %u too old, expecting: %u\n", toolbox_api_version, BLUESCSI_TOOLBOX_API_VER);
-			//return -1;
+		if (toolbox_api_version < TOOLBOX_API_VER) {
+			fprintf(stdout, "Toolbox API version %u too old, expecting: %u\n", toolbox_api_version, TOOLBOX_API_VER);
+			/*return -1; */
 		}
 
 	} else {
@@ -658,72 +899,168 @@ static int bluescsi_inquiry(int dev, int print)
 	}
 
 	/*
-	 * Decide whether this is a toolbox-capable target. Accept on EITHER:
-	 *  1. the INQUIRY identity (vendor + product + revision) containing an
-	 *     accepted id - real BlueSCSI stamps "BlueSCSI<ver>" into product_rev,
-	 *     and the IRIS emulator's product field reads "IRIS EMUL DISK"; or
-	 *  2. the MODE SENSE page 0x31 vendor page carrying the toolbox magic.
-	 * The INQUIRY check runs first so a recognised device never has to issue
-	 * the (potentially CHECK CONDITION) page 0x31 probe.
+	 * Decide whether this is a toolbox-capable target. Two stages:
+	 *
+	 * 1. SELF-IDENTIFICATION - the device claims toolbox support, either by
+	 *    carrying a known firmware name ("BlueSCSI"/"ZuluSCSI", stamped from
+	 *    INQUIRY byte 36 which our product_rev field spans) or by returning the
+	 *    MODE SENSE page 0x31 vendor page. The INQUIRY check runs first so a
+	 *    recognised device never has to issue the page 0x31 probe.
+	 *    -F skips this stage for firmware we don't know by name yet.
+	 *
+	 * 2. CONFIRMATION - the device actually ANSWERS a toolbox command (0xD9)
+	 *    with a valid device-type map. A claim alone is not enough: this is what
+	 *    keeps a device that only emulates a disk from being driven as a
+	 *    toolbox target when it does not implement 0xD0-0xDA.
 	 */
-	memset(identity, 0, sizeof(identity));
-	strncpy(identity, inq.vendor_id, sizeof(identity) - 1);
-	strncat(identity, " ", sizeof(identity) - strlen(identity) - 1);
-	strncat(identity, inq.product_id, sizeof(identity) - strlen(identity) - 1);
-	strncat(identity, " ", sizeof(identity) - strlen(identity) - 1);
-	strncat(identity, inq.product_rev, sizeof(identity) - strlen(identity) - 1);
+	inquiry_identity(&inq, identity, sizeof(identity));
 
-	for (i = 0; i < N_ACCEPT_IDS; i++) {
-		if (strstr(identity, toolbox_accept_ids[i]) != NULL) {
+	if (force_toolbox) {
+		accepted = 1;
+		if (verbose)
+			fprintf(stdout, "Skipping identity check (-F): testing 0xD9 directly\n");
+	} else {
+		match = identity_accepted(identity);
+		if (match != NULL) {
 			accepted = 1;
 			if (verbose)
-				fprintf(stdout, "Accepted via INQUIRY identifier '%s'\n", toolbox_accept_ids[i]);
-			break;
+				fprintf(stdout, "Claims toolbox via INQUIRY firmware id '%s'\n", match);
+		}
+
+		if (!accepted && toolbox_modesense_page31(dev, 0) == 0) {
+			accepted = 1;
+			if (verbose)
+				fprintf(stdout, "Claims toolbox via MODE SENSE page 0x31 magic\n");
 		}
 	}
 
-	if (!accepted && bluescsi_modesense_toolbox(dev) == 0) {
-		accepted = 1;
-		if (verbose)
-			fprintf(stdout, "Accepted via MODE SENSE page 0x31 toolbox magic\n");
-	}
-
 	if (!accepted) {
-		fprintf(stderr, "Error: '%s' is not a recognised BlueSCSI/IRIS toolbox target\n", identity);
+		fprintf(stderr, "Error: '%s' does not advertise the toolbox API.\n", identity);
+		fprintf(stderr, "Known toolbox firmware: BlueSCSI, ZuluSCSI (toolbox must be enabled).\n");
+		fprintf(stderr, "If you believe this device supports it, retry with -F to test it directly.\n");
 		return 1;
 	}
 
 	/*
-	 * Accepted. Fetch the 8-byte device-type map (0xD9) used to gate CD
-	 * operations. This is informational - a failure here is non-fatal so that
-	 * shared-directory operations still work even if the map is unavailable.
+	 * Confirm the claim by getting a real answer out of the device. This also
+	 * populates device_list[], used to gate CD operations.
 	 */
-	if (bluescsi_listdevices(dev, &dev_flags) == 0) {
-		if (verbose)
-			fprintf (stdout, "Device flags: ");
-		for (i = 0; i < 8; i++)
-		{
-			device_list[i] = dev_flags[i]; //Write the flags to the device list
-			if (verbose)
-				fprintf (stdout,"%02x ", (unsigned char) dev_flags[i]);
-		}
-		if (verbose)
-			fprintf(stdout, "\n");
-		free(dev_flags);
+	if (toolbox_confirm(dev, 0) != 0) {
+		fprintf(stderr, "Error: '%s' did not answer TOOLBOX_LIST_DEVICES (0xD9).\n", identity);
+		if (force_toolbox)
+			fprintf(stderr, "Tested directly because of -F; this device does not implement the toolbox.\n");
+		else
+			fprintf(stderr, "It advertises the toolbox but does not implement it - refusing to continue.\n");
+		return 1;
 	}
-	else {
-		fprintf (stderr, "Warning: couldn't fetch device-type map (0xD9): %s\n", strerror(errno));
-		free(dev_flags);
+
+	if (verbose) {
+		fprintf (stdout, "Confirmed by 0xD9. Device flags: ");
+		for (i = 0; i < 8; i++)
+			fprintf (stdout, "%02x ", (unsigned char)device_list[i]);
+		fprintf (stdout, "\n");
 	}
 
 	return 0;
 }
 
+/*
+ * Scan every generic SCSI device node this host exposes, send INQUIRY to each,
+ * and print whatever answers - flagging the toolbox-capable ones. Unlike every
+ * other operation this needs NO device path: it is how you FIND the path to
+ * pass to the others.
+ *
+ * Probing is deliberately quiet and retry-free (scsi_send_command_probe): most
+ * nodes on a real bus will not answer, and the normal retry-with-warnings path
+ * would make a scan slow and noisy. INQUIRY and MODE SENSE are both read-only,
+ * so scanning cannot disturb an attached disk.
+ *
+ * Returns the number of toolbox-capable targets found, or -1 on error.
+ */
+static int toolbox_scanbus(void)
+{
+	char paths[MAX_SCAN_DEVICES][SCSI_PATH_MAX];
+	scsi_inquiry inq;
+	char identity[64];
+	int count, i, dev;
+	int toolbox;
+	int claims;
+	int answered = 0;
+	int found = 0;
+	int unconfirmed = 0;
+
+	count = scsi_enum_devices(paths, MAX_SCAN_DEVICES);
+	if (count < 0)
+	{
+		fprintf (stderr, "Error: could not enumerate SCSI devices\n");
+		return -1;
+	}
+	if (count == 0)
+	{
+		fprintf (stderr, "No generic SCSI device nodes found.\n");
+#if defined(OS_IRIX)
+		fprintf (stderr, "Expected nodes like /dev/scsi/sc0d1l0 - check 'ls /dev/scsi'.\n");
+#elif defined(OS_LINUX)
+		fprintf (stderr, "Expected nodes like /dev/sg0 - is the sg module loaded?\n");
+#endif
+		return 0;
+	}
+
+	fprintf (stdout, "Scanning %i SCSI device node(s)...\n\n", count);
+	fprintf (stdout, "%-22s %-8s %s\n", "DEVICE", "TYPE", "IDENTITY");
+
+	for (i = 0; i < count; i++)
+	{
+		/* Read-only open: INQUIRY/MODE SENSE never modify the target. */
+		dev = scsi_open(paths[i], 1);
+		if (dev < 0)
+			continue;
+
+		if (scsi_read_inquiry(dev, &inq, NULL, 0, 1) == 0)
+		{
+			answered++;
+			inquiry_identity(&inq, identity, sizeof(identity));
+
+			/* Claim first (INQUIRY firmware name, else page 0x31), then
+			 * prove it by getting a real 0xD9 answer. A vendor opcode is
+			 * only ever sent to a device that already claimed support -
+			 * or to everything, if the user asked for -F. */
+			claims = force_toolbox ||
+				 (identity_accepted(identity) != NULL) ||
+				 (toolbox_modesense_page31(dev, 1) == 0);
+			toolbox = claims && (toolbox_confirm(dev, 1) == 0);
+
+			if (toolbox)
+				found++;
+			else if (claims)
+				unconfirmed++;
+
+			fprintf (stdout, "%-22s %-8s %s%s\n", paths[i],
+				inquiry_pdt_name(inq.dev_type), identity,
+				toolbox ? "  [TOOLBOX]" :
+					(claims ? "  [claims toolbox, no 0xD9 answer]" : ""));
+		}
+		scsi_close(dev);
+	}
+
+	fprintf (stdout, "\n%i device(s) answered, %i toolbox-capable", answered, found);
+	if (unconfirmed > 0)
+		fprintf (stdout, " (%i claimed toolbox but failed 0xD9)", unconfirmed);
+	fprintf (stdout, ".\n");
+
+	if (found > 0)
+		fprintf (stdout, "Pass one of the [TOOLBOX] paths to the other options, e.g. -i <device>\n");
+	else if (answered > 0 && !force_toolbox)
+		fprintf (stdout, "No toolbox target found. Check toolbox mode is enabled on the device,\n"
+				 "or re-scan with -F to test every device by issuing 0xD9 directly.\n");
+	return found;
+}
+
 static void do_drive(char *path, int list, int verbose, int cd_img, int file, char *outdir)
 {
 	int dev;
-	int dev_scsi_id; //SCSI ID pulled from path
-	int readonly; //Needed to determine if it's a CDROM and only able to be opened READONLY
+	int dev_scsi_id; /* SCSI ID pulled from path */
+	int readonly; /* Needed to determine if it's a CDROM and only able to be opened READONLY */
 	readonly = 0;
 	
 	/* CD targets are emulated read-only, so list-CDs and change-CD must open
@@ -737,80 +1074,109 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 		if (!readonly)
 		{
 			fprintf (stderr, "Error opening device for read/write, trying to open readonly\n");
-			dev = scsi_open(path, 1); //Try to open the device as read only
+			dev = scsi_open(path, 1); /*Try to open the device as read only */
 			
 		}
 		if (dev < 0) {
-			fprintf(stderr, "ERROR: Cannot open device: %s\nTry running again as root\n", strerror(errno));
+			fprintf(stderr, "ERROR: Cannot open %s: %s\n", path, strerror(errno));
+			/* Only suggest root if that is plausibly the problem. */
+			if (!running_as_root())
+				fprintf(stderr, "You are not root - that is almost certainly why. Re-run as root.\n");
 			exit(1);
 		}
 	}
 
-	//Do inquiry to check we are working with a BlueSCSI
-	//device_type = bluescsi_inquiry (dev, PRINT_OFF);
-	if (bluescsi_inquiry (dev, PRINT_OFF) != 0)
+	/*Do inquiry to check we are working with a BlueSCSI */
+	/*device_type = toolbox_inquiry (dev, PRINT_OFF); */
+	if (toolbox_inquiry (dev, PRINT_OFF) != 0)
 	{
-		fprintf (stderr, "Didn't find a BlueSCSI device at %s\n", path);
+		fprintf (stderr, "No usable toolbox device at %s\n", path);
 		scsi_close (dev);
 		exit(1);
 	}
 	
-	if ((dev_scsi_id = path_to_devnum(path)) < 0)
-		goto close_dev;
+	/* Only the CD operations (-l / -c) need the SCSI target id parsed out of the
+	 * path to index device_list[]. Everything else (-i, -t, -D, -s, -g, -p) talks
+	 * to the already-open device directly, so a path that opened fine but doesn't
+	 * match the strict /dev/scsi/scNdNlN form must NOT block them. */
+	dev_scsi_id = path_to_devnum(path);
 
 	if (list == MODE_CD)
 	{
+		if (dev_scsi_id < 0)
+		{
+			fprintf (stderr, "Cannot list CDs: couldn't read the SCSI target id from '%s'\n", path);
+			scsi_close(dev);
+			exit(1);
+		}
 		if (device_list[dev_scsi_id] != TYPE_CD)
 		{
 			fprintf (stderr, "Tried to list CDs, but an emulated CD drive wasn't detected\n");
 			scsi_close(dev);
 			exit(1);
 		}
-		else
-			bluescsi_listcds(dev);
+		toolbox_listcds(dev);
 	}
 	else if (list == MODE_INQUIRY)
-		bluescsi_inquiry(dev, PRINT_ON);
+		toolbox_inquiry(dev, PRINT_ON);
+	else if (list == MODE_DEVICES)
+		toolbox_printdevices(dev);
 	else if (list == MODE_DEBUG)
-		bluescsi_setdebug(dev, file);
+		toolbox_setdebug(dev, file);
+	else if (list == MODE_DEBUG_GET)
+	{
+		int dbg = toolbox_getdebug(dev);
+		if (dbg >= 0)
+			fprintf (stdout, "Debug mode: %s\n", dbg ? "on" : "off");
+	}
 	else if (list == MODE_SHARED)
-		bluescsi_listfiles(dev, PRINT_ON);
+		toolbox_listfiles(dev, PRINT_ON);
 	else if (list == MODE_PUT)
-		bluescsi_sendfile (dev, outdir);
+		toolbox_sendfile (dev, outdir);
 	else if (file != NOT_ACTIVE)
-		bluescsi_getfile (dev, file, outdir);
+		toolbox_getfile (dev, file, outdir);
 	else if (cd_img != NOT_ACTIVE)
 	{
-		if (device_list[dev_scsi_id] != TYPE_CD)
+		if (dev_scsi_id < 0)
+			fprintf (stderr, "Cannot switch CD: couldn't read the SCSI target id from '%s'\n", path);
+		else if (device_list[dev_scsi_id] != TYPE_CD)
 			fprintf (stderr, "Device doesn't seem to be a CD drive? Detected type %i on SCSI ID %i\n", device_list[dev_scsi_id], dev_scsi_id);
 		else
-			bluescsi_setnextcd(dev, cd_img);
+			toolbox_setnextcd(dev, cd_img);
 	}
+	else
+		fprintf (stderr, "No operation requested for %s. Try -i, -t, -s, or -h for help.\n", path);
 
-close_dev:
 	scsi_close(dev);
 }
 
 static void usage(void)
 {
-	fprintf(stderr, "\nUsage:   bstoolbox [options] [device]\n\n");
+	fprintf(stderr, "\nUsage:   irixscsitb [options] [device]\n\n");
 #if defined(OS_IRIX)
-	fprintf(stderr, "example: bstoolbox -s /dev/scsi/sc0d1l0\n\n");
+	fprintf(stderr, "example: irixscsitb -s /dev/scsi/sc0d1l0\n\n");
 #elif defined(OS_LINUX)
-	fprintf(stderr, "example: bstoolbox -s /dev/sg2\n\n");
+	fprintf(stderr, "example: irixscsitb -s /dev/sg2\n\n");
 #endif
 	fprintf(stderr, "Options:\n");
 	fprintf(stderr, "\t-h      : display this help message and exit\n");
 	fprintf(stderr, "\t-v      : be verbose\n");
-	fprintf(stderr, "\t-i      : interrogate BlueSCSI and return version\n");
+	fprintf(stderr, "\t-b      : scan the SCSI bus and list every device (NO device path needed)\n");
+	fprintf(stderr, "\t-i      : interrogate the device and report firmware/toolbox info\n");
+	fprintf(stderr, "\t-t      : list emulated SCSI targets (device map)\n");
 	fprintf(stderr, "\t-l      : list available CDs\n");
 	fprintf(stderr, "\t-s      : List /shared directory\n");
 	fprintf(stderr, "\t-c num  : change to CD number (1, 2, etc)\n");
 	fprintf(stderr, "\t-g num  : get file from shared directory (1, 2, etc)\n");
 	fprintf(stderr, "\t-p file : put file to shared directory\n");
 	fprintf(stderr, "\t-o dir  : set output directory, defaults to current\n");
-	fprintf(stderr, "\t-d num  : set debug mode (0 = off, 1 - on)\n");
-	fprintf(stderr, "\n\nPlease make sure you run the program as root.\n");
+	fprintf(stderr, "\t-d num  : set debug mode (0 = off, 1 = on)\n");
+	fprintf(stderr, "\t-D      : show current debug mode\n");
+	fprintf(stderr, "\t-F      : skip the identity check; test the device with a real toolbox command\n");
+	/* Only nag about root when we actually aren't root. */
+	if (!running_as_root())
+		fprintf(stderr, "\nNOTE: you are not running as root - opening the SCSI device will most\n"
+				"likely fail. Re-run this as root (or via su).\n");
 }
 
 int main(int argc, char *argv[])
@@ -818,7 +1184,7 @@ int main(int argc, char *argv[])
 	int c, cdimg = NOT_ACTIVE, list = 0, file = NOT_ACTIVE;
 	char outdir[1024];
 
-	while ((c = getopt(argc, argv, "hvlsic:d:g:o:p:")) != -1) switch (c) {
+	while ((c = getopt(argc, argv, "hvlsitbDFc:d:g:o:p:")) != -1) switch (c) {
 		case 'c':
 			cdimg = atoi(optarg);
 			break;
@@ -841,6 +1207,18 @@ int main(int argc, char *argv[])
 		case 'i':
 			list = MODE_INQUIRY;
 			break;
+		case 't':
+			list = MODE_DEVICES;
+			break;
+		case 'b':
+			list = MODE_SCAN;
+			break;
+		case 'F':
+			force_toolbox = 1;
+			break;
+		case 'D':
+			list = MODE_DEBUG_GET;
+			break;
 		case 'd':
 			list = MODE_DEBUG;
 			file = atoi(optarg);
@@ -856,18 +1234,31 @@ int main(int argc, char *argv[])
 	
 	argc -= optind;
 	argv += optind;
-	//Stop any removable media managers running on the host system before changing CDs
+
+	/* -b scans the bus to FIND devices, so it is the one mode that takes no
+	 * device path. Handle it before the path check below. */
+	if (list == MODE_SCAN)
+		return toolbox_scanbus() < 0 ? 1 : 0;
+
+	/*Stop any removable media managers running on the host system before changing CDs */
 	if (cdimg != -1)
 		mediad_stop ();
 
 	if (argc < 1) {
-		fprintf (stderr, "No device path entered\n");
+		fprintf (stderr, "Error: no device path given.\n");
+		fprintf (stderr, "A target device path is required for every operation except -b.\n");
+		fprintf (stderr, "Run 'irixscsitb -b' to scan the bus and list the available device paths.\n");
+#if defined(OS_IRIX)
+		fprintf (stderr, "(They look like /dev/scsi/sc0d1l0; 'ls /dev/scsi' shows them too.)\n");
+#elif defined(OS_LINUX)
+		fprintf (stderr, "(They look like /dev/sg2; 'lsscsi -g' shows them too.)\n");
+#endif
 		usage();
 		return 1;
 	} else if (argc > 1) {
-		fprintf(stderr, "WARNING: Options after '%s' ignored.\n", argv[0]);
+		fprintf(stderr, "WARNING: extra arguments after '%s' ignored - put options BEFORE the device path.\n", argv[0]);
 	}
-	//strcpy (device_path, argv[0]); //Copy the path for later
+	/*strcpy (device_path, argv[0]); //Copy the path for later */
 	do_drive(argv[0], list, verbose, cdimg, file, outdir);
 	
 	if (cdimg != -1)

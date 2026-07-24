@@ -1,9 +1,9 @@
-project('bstoolbox', 'c')
+project('irixscsitb', 'c')
 
-srcs = [ 'bstoolbox.c' ]
+srcs = [ 'irixscsitb.c' ]
 
 if build_machine.kernel() == 'linux'
     srcs += 'linux.c'
 endif
 
-executable('bstoolbox', srcs, install : true)
+executable('irixscsitb', srcs, install : true)

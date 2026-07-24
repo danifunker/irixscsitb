@@ -1,8 +1,8 @@
 #!/bin/sh
-# Local end-to-end build: cross-compile bstoolbox for IRIX from a sysroot tarball
-# (built by scripts/make-irix-sysroot.sh), then package the EFS CD + SGI HDD
-# images with rb-cli. This is the same flow the release workflow runs, but on
-# your machine. Requires Docker running.
+# Local end-to-end build: cross-compile irixscsitb for IRIX from a sysroot tarball
+# (built by scripts/make-irix-sysroot.sh), then package the .iso / .hda / .tar.gz
+# with rb-cli. This is the same flow the release workflow runs, but on your
+# machine. Requires Docker running.
 #
 # Usage:
 #   scripts/build-local.sh --sysroot irix-5.3-sysroot.tgz [--rb-cli PATH]
@@ -45,19 +45,19 @@ cp "$SYSROOT" "$TC/sysroot.tgz"
 echo "==> [2/3] building the IRIX cross-toolchain image (first run takes a while)"
 docker build -t "$IMAGE_TAG" "$TC"
 
-echo "==> [3/3] cross-compiling bstoolbox (o32, runs on IRIX 5.3-6.5)"
+echo "==> [3/3] cross-compiling irixscsitb (o32, runs on IRIX 5.3-6.5)"
 # Compile inside the toolchain container; gcc finds the sysroot via its baked-in
 # --with-sysroot default. -mabi=32 -mips2 = o32.
 docker run --rm -v "$REPO":/work -w /work "$IMAGE_TAG" sh -c '
 	set -eux
 	mips-sgi-irix6.5-gcc -DOS_IRIX -O2 -mabi=32 -mips2 \
-		-o bstoolbox-o32 bstoolbox.c irix.c
-	file bstoolbox-o32
+		-o irixscsitb-o32 irixscsitb.c irix.c
+	file irixscsitb-o32
 '
 
-echo "==> packaging EFS CD + SGI HDD images"
-"$REPO/scripts/package-efs.sh" \
-	--bin "$REPO/bstoolbox-o32" \
+echo "==> packaging .iso + .hda + .tar.gz"
+"$REPO/scripts/package.sh" \
+	--bin "$REPO/irixscsitb-o32" \
 	--version "$VERSION" \
 	--outdir "$OUTDIR" \
 	--rb-cli "$RB" \
@@ -65,4 +65,4 @@ echo "==> packaging EFS CD + SGI HDD images"
 
 echo
 echo "Local build complete:"
-ls -la "$REPO/bstoolbox-o32" "$OUTDIR"/*.img
+ls -la "$REPO/irixscsitb-o32" "$OUTDIR"/irixscsitb-"$VERSION".*

@@ -1,8 +1,16 @@
-# ci/iris-irix53.toml — IRIS machine config for the headless CI build of bstoolbox.
+# ci/iris-irix53.toml — IRIS machine config for the headless CI build of irixscsitb.
 #
-# Boots an ALREADY-INSTALLED IRIX 5.3 system disk and exposes a scratch SCSI
-# volume so scripts/iris-build.sh can push the source in and pull the compiled
-# o32 binary out (via the iris-ci control socket: boot / login / push / run / pull).
+# Boots an ALREADY-INSTALLED IRIX 5.3 system disk and exports a host directory
+# over IRIS's built-in NFS server so scripts/iris-build.sh can drop the source in
+# and read the compiled o32 binary back out — no scratch volume, no push/pull.
+# (scripts/iris-build.sh passes --nfs-dir on the command line, which overrides
+# the shared_dir below; this stanza is what makes a *manual* `iris --config
+# ci/iris-irix53.toml` run export something too.)
+#
+# NETWORKING PREREQUISITE: NFS needs an IP inside the guest. The IRIS NAT hands
+# out 192.168.0.2 via DHCP and answers NFS at the gateway 192.168.0.1 — but the
+# guest must be configured to ask. For the recommended ULTRA64 5.3 image, run
+# scripts/irix-enable-dhcp.sh against the boot disk ONCE before first use.
 #
 # RECOMMENDED BASE DISK: the "ULTRA64 2GIG SCSI IRIX 5.3" image — an installed
 # 5.3 system that already has the IDO developer option (cc / make / headers), so
@@ -23,12 +31,18 @@ serial_log = "iris-ci-console.log"
 path  = "irix53.chd"
 cdrom = false
 
-# Scratch volume: host<->guest file transfer for iris-ci push/pull. iris
-# auto-creates the file (SGI volume header + payload). Guest sees it at
-# /dev/rdsk/dks0d2s0; scratch contents survive snapshot rollback.
-[scsi.2]
-path    = "iris-ci-scratch.raw"
-cdrom   = false
-overlay = false
-scratch = true
-size_mb = 64
+# NFS export: host<->guest file transfer with nothing to install (in-core,
+# pure-Rust NFS server; NFSv2 for 5.3, NFSv3 for 6.x, auto-negotiated). Mount it
+# inside IRIX with:  mount 192.168.0.1:/ /mnt
+[nfs]
+shared_dir = "./ci-share"
+
+# Old scratch-volume path (no longer used by iris-build.sh; kept commented as a
+# no-networking fallback — guest sees it at /dev/rdsk/dks0d2s0). Uncomment to
+# transfer files via `iris-ci push/pull` instead of NFS.
+#[scsi.2]
+#path    = "iris-ci-scratch.raw"
+#cdrom   = false
+#overlay = false
+#scratch = true
+#size_mb = 64

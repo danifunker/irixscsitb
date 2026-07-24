@@ -1,18 +1,18 @@
 # BlueSCSI detection & toolbox protocol (host ⇄ device)
 
-This documents exactly what `bstoolbox` (the host tool in this repo) sends and
+This documents exactly what `irixscsitb` (the host tool in this repo) sends and
 what it expects back, so the **IRIS emulator** can present a SCSI target that
-`bstoolbox` recognises as a BlueSCSI and drives correctly.
+`irixscsitb` recognises as a BlueSCSI and drives correctly.
 
 All multi-byte SCSI fields are **big-endian**. The host's view of the protocol
-lives in `bstoolbox.c`; opcodes in `bstoolbox.h`. Cross-checked against BlueSCSI
+lives in `irixscsitb.c`; opcodes in `irixscsitb.h`. Cross-checked against BlueSCSI
 firmware `src/BlueSCSI_Toolbox.cpp` and `lib/SCSI2SD/src/firmware/inquiry.c`.
 
 ## 1. How the host decides "this is a toolbox target"
 
 `do_drive()` calls `bluescsi_inquiry()` before *any* operation. If it returns
 non-zero, the tool prints an error and exits. A device is **accepted if EITHER**
-of the following matches (`bstoolbox.c`, `toolbox_accept_ids[] = {"BlueSCSI",
+of the following matches (`irixscsitb.c`, `toolbox_accept_ids[] = {"BlueSCSI",
 "IRIS EMUL DISK"}`):
 
 1. **INQUIRY identity** (§1a) contains an accepted id, **or**

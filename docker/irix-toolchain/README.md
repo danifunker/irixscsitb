@@ -1,7 +1,7 @@
 # IRIX cross-toolchain image
 
 Builds `mips-sgi-irix6.5-gcc`, used by `.github/workflows/release.yml` to
-cross-compile `bstoolbox` for IRIX. The image is set via the repo variable
+cross-compile `irixscsitb` for IRIX. The image is set via the repo variable
 `IRIX_TOOLCHAIN_IMAGE` (and `IRIX_CC` if your compiler is named differently).
 
 ## You must supply an IRIX sysroot
