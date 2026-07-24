@@ -10,7 +10,7 @@ OBJS =
 BUILDDIR = build
 TARNAME  = irixscsitb.tar.gz
 
-.PHONY: default detect irix-o32 irix-n32 tar clean
+.PHONY: default detect irix-o32 irix-n32 tar test clean
 
 # Default target
 default: detect
@@ -69,6 +69,17 @@ tar: default
 	if [ -f README.md ]; then files="$$files README.md"; fi; \
 	tar cf - $$files | gzip -c > $(BUILDDIR)/$(TARNAME); \
 	echo "*** Packaged $(BUILDDIR)/$(TARNAME)"
+
+# Host-side smoke test. Builds irixscsitb.c against tests/mock_os.c - a fake SCSI
+# bus - so the protocol and device-detection logic can be exercised on a dev
+# machine with no IRIX or Linux SCSI headers (e.g. macOS). Uses the host cc and
+# the host's own C compiler defaults; nothing here ships in a release.
+# Expected: BlueSCSI + ZuluSCSI marked [TOOLBOX], IRIS EMUL DISK NOT marked,
+# and the page-0x31 liar reported as "claims toolbox, no 0xD9 answer".
+test:
+	$(CC) -std=c89 -Wall -DOS_IRIX -I. -o tests/irixscsitb-mock irixscsitb.c tests/mock_os.c
+	@echo "*** mock bus scan:"
+	@./tests/irixscsitb-mock -b
 
 # Build target
 irixscsitb: $(OBJS)

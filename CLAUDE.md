@@ -58,9 +58,23 @@ only touch `irix.c`/`linux.c` for transport.
 
 ```sh
 make           # detects OS via uname, builds ./irixscsitb
+make tar       # build + package binary/README into build/irixscsitb.tar.gz
+make test      # host-side smoke test against a mock SCSI bus (see below)
 make clean
 meson setup build && meson compile -C build   # Linux/CI only
 ```
+
+**`make test` is how you verify changes without hardware.** The dev machine is
+macOS with no IRIX/Linux SCSI headers, so `irix.c`/`linux.c` cannot be compiled
+here — but `irixscsitb.c` (all the protocol and detection logic) *can*, by
+linking it against `tests/mock_os.c`, a fake 7-device SCSI bus implementing the
+`os.h` contract. It covers a plain disk, an IRIS EMUL DISK, a CD-ROM, a real
+BlueSCSI, a real ZuluSCSI, a dead node, and a "liar" that serves page 0x31 but
+never implements `0xD9`. Expected: only BlueSCSI and ZuluSCSI are `[TOOLBOX]`;
+IRIS is not; the liar reads `claims toolbox, no 0xD9 answer`. **Run it after any
+change to detection or the command builders** — it catches regressions that a
+syntax check cannot. Add a device to `mock_paths[]`/`mock_command()` to cover
+new firmware.
 
 Run **as root**. Device path is positional:
 - IRIX:  `irixscsitb -s /dev/scsi/sc0d1l0`
