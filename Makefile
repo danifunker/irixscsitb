@@ -10,6 +10,11 @@ OBJS =
 BUILDDIR = build
 TARNAME  = irixscsitb.tar.gz
 
+# MUST be the first target in this file: make takes the first rule it sees as
+# the default goal, so anything above this (the version.h/buildhost.h rules,
+# say) would silently become what plain `make` builds.
+default: detect
+
 .PHONY: default detect irix-o32 irix-n32 irix-gui-o32 irix-gui-n32 tar test irix-syntax gui-syntax clean FORCE
 
 # Two headers, because there are two different questions with two different
@@ -38,10 +43,17 @@ buildhost.h: FORCE
 
 FORCE:
 
-# Default target
-default: detect
-
 # OS detection and conditional build
+# Builds BOTH binaries on IRIX - the CLI and the Motif GUI - unless NOGUI is
+# set in the environment:
+#
+#   make                 CLI + GUI
+#   NOGUI=1 make         CLI only
+#
+# The GUI step is deliberately non-fatal. A machine without Motif development
+# installed should still end up with a working irixscsitb rather than a failed
+# build; the warning says what happened. Linux gets the CLI only - gui_motif.c
+# is IRIX-only by design.
 detect:
 	@OS=`uname -s`; \
 	if [ "$$OS" = "Linux" ]; then \
@@ -54,20 +66,20 @@ detect:
 			LDFLAGS=""; \
 	elif [ "$$OS" = "IRIX64" ]; then \
 		echo "*** Compiling for IRIX64 (n32/mips3)"; \
-		$(MAKE) irixscsitb \
-			BUILD_OS=IRIX \
-			SRCS="irixscsitb.c toolbox.c version.c irix.c" \
-			OBJS="irixscsitb.o toolbox.o version.o irix.o" \
-			CFLAGS="-mips3 -n32 -O2 -DOS_IRIX -DBUILD_N32" \
-			LDFLAGS=""; \
+		$(MAKE) irix-n32 || exit 1; \
+		if [ -z "$$NOGUI" ]; then \
+			echo "*** Compiling the Motif GUI (n32/mips3)"; \
+			$(MAKE) irix-gui-n32 || \
+				echo "*** WARNING: GUI did not build; CLI is fine. Check libXm/libSgm."; \
+		fi; \
 	elif [ "$$OS" = "IRIX" ]; then \
 		echo "*** Compiling for IRIX (o32/mips2 - portable 5.3-6.5)"; \
-		$(MAKE) irixscsitb \
-			BUILD_OS=IRIX \
-			SRCS="irixscsitb.c toolbox.c version.c irix.c" \
-			OBJS="irixscsitb.o toolbox.o version.o irix.o" \
-			CFLAGS="-32 -mips2 -O2 -DOS_IRIX -DBUILD_O32" \
-			LDFLAGS=""; \
+		$(MAKE) irix-o32 || exit 1; \
+		if [ -z "$$NOGUI" ]; then \
+			echo "*** Compiling the Motif GUI (o32/mips2)"; \
+			$(MAKE) irix-gui-o32 || \
+				echo "*** WARNING: GUI did not build; CLI is fine. Check libXm/libSgm."; \
+		fi; \
 	else \
 		echo "Unsupported OS: $$OS"; exit 1; \
 	fi
