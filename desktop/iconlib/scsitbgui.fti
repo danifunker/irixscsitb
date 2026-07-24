@@ -1,0 +1,54 @@
+#
+# scsitbgui.fti - the SCSI mark, drawn for the IRIX desktop.
+#
+# The Indigo Magic icon language is vector polygons on a 0..100 grid with y
+# increasing upwards, which suits this mark far better than a bitmap: the
+# diamond and its bar are straight edges, so the desktop icon stays crisp at
+# whatever size the Icon Catalog draws it.
+#
+# The shape is the diamond outline drawn as four separate quadrilaterals - one
+# per edge - because the fill primitives here want convex polygons and a ring
+# is not one. The two right-hand edges stop short of where the vertex would be,
+# which is what opens the mark onto the bar.
+#
+
+#       upper-left edge
+        color(iconcolor);
+        bgnpolygon();
+                vertex(50.00, 90.00);
+                vertex(10.00, 50.00);
+                vertex(20.00, 50.00);
+                vertex(50.00, 80.00);
+        endpolygon();
+
+#       lower-left edge
+        bgnpolygon();
+                vertex(10.00, 50.00);
+                vertex(50.00, 10.00);
+                vertex(50.00, 20.00);
+                vertex(20.00, 50.00);
+        endpolygon();
+
+#       upper-right edge, truncated at the bar
+        bgnpolygon();
+                vertex(50.00, 90.00);
+                vertex(82.00, 58.00);
+                vertex(72.00, 58.00);
+                vertex(50.00, 80.00);
+        endpolygon();
+
+#       lower-right edge, truncated at the bar
+        bgnpolygon();
+                vertex(50.00, 10.00);
+                vertex(82.00, 42.00);
+                vertex(72.00, 42.00);
+                vertex(50.00, 20.00);
+        endpolygon();
+
+#       the bar, running out to the right edge
+        bgnpolygon();
+                vertex(48.00, 42.00);
+                vertex(100.00, 42.00);
+                vertex(100.00, 58.00);
+                vertex(48.00, 58.00);
+        endpolygon();

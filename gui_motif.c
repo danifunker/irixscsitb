@@ -156,11 +156,37 @@ static void set_window_icon(Widget shell)
 
 	if (dpy == NULL)
 		return;
+	/*
+	 * Depth 1 on purpose. ICCCM allows WM_HINTS.icon_pixmap to be depth 1 or
+	 * the screen depth, but 4Dwm carries a "color icon pixmap not supported"
+	 * error string, so the bitmap is the safe form for the WM.
+	 */
 	pm = XCreateBitmapFromData(dpy, RootWindow(dpy, DefaultScreen(dpy)),
 				   (char *)icon_bits, ICON_WIDTH, ICON_HEIGHT);
 	if (pm == None)
 		return;
 	XtVaSetValues(shell, XtNiconPixmap, pm, XtNiconName, "scsitbgui", NULL);
+}
+
+/*
+ * The same artwork as a SCREEN-DEPTH pixmap, for drawing inside the app - a
+ * Motif XmNsymbolPixmap will not take a depth-1 bitmap. Foreground/background
+ * come from the widget it is going into so it tracks the current scheme
+ * instead of being hardcoded black on white.
+ */
+static Pixmap icon_pixmap_for(Widget w)
+{
+	Display *dpy = XtDisplay(w);
+	Screen *scr;
+	Pixel fg = 0, bg = 0;
+
+	if (dpy == NULL)
+		return None;
+	scr = XtScreen(w);
+	XtVaGetValues(w, XmNforeground, &fg, XmNbackground, &bg, NULL);
+	return XCreatePixmapFromBitmapData(dpy, RootWindowOfScreen(scr),
+					   (char *)icon_bits, ICON_WIDTH, ICON_HEIGHT,
+					   fg, bg, (unsigned int)DefaultDepthOfScreen(scr));
 }
 
 /* Which listing the lower pane is showing. */
@@ -251,9 +277,18 @@ static void show_msg(const char *title, const char *text, int is_error)
 		dlg = error_dialog;
 	} else {
 		if (info_dialog == NULL) {
+			Pixmap pm;
+
 			info_dialog = XmCreateInformationDialog(toplevel, "infoDialog", NULL, 0);
 			XtUnmanageChild(XmMessageBoxGetChild(info_dialog, XmDIALOG_CANCEL_BUTTON));
 			XtUnmanageChild(XmMessageBoxGetChild(info_dialog, XmDIALOG_HELP_BUTTON));
+
+			/* Replace Motif's generic "i" with the SCSI mark, so the
+			 * artwork is visible in the app and not only when the
+			 * window happens to be iconified. */
+			pm = icon_pixmap_for(info_dialog);
+			if (pm != None)
+				XtVaSetValues(info_dialog, XmNsymbolPixmap, pm, NULL);
 		}
 		dlg = info_dialog;
 	}

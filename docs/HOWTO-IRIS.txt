@@ -192,3 +192,41 @@ Things worth reporting back:
   - does it look like an SGI app (IndigoMagic-ish) or like plain grey Motif?
     Both are acceptable - the SGI look comes from schemes and is applied only
     if this system has them - but which one you get is useful to know.
+
+
+5. Icons - three different things
+---------------------------------
+Worth separating, because they come from different places:
+
+a) The window-manager icon. The program sets this on itself; it is the SCSI
+   mark. You only see it when the window is ICONIFIED - it is not an icon for
+   the file on disk. If you iconify and still get 4Dwm's generic icon, 4Dwm is
+   ignoring the client-supplied one; add to your X resources:
+       4Dwm*useClientIcon: True
+   then restart the window manager.
+
+b) In the About box. Help > About draws the same mark in place of Motif's
+   generic "i" symbol. Nothing to install - if it is not there, the build is
+   older than this change.
+
+c) The EXECUTABLE's icon, in the Icon Catalog and file manager. This is the
+   IRIX desktop's File Typing Rules mechanism and has to be installed as root:
+
+       cp desktop/scsitbgui.ftr        /usr/lib/filetype/local/
+       cp desktop/iconlib/scsitbgui.fti /usr/lib/filetype/local/iconlib/
+
+   then add scsitbgui.ftr to FTR_FILES in /usr/lib/filetype/local/Makefile:
+
+       FTR_FILES= \
+               scsitbgui.ftr \
+               ${NULL}
+
+   then compile the rules and restart the desktop:
+
+       cd /usr/lib/filetype/local && make
+       /usr/sbin/cvtfiletypes            (if present)
+       killall desktopMgr                (or log out and back in)
+
+   UNTESTED - written from the syntax of the stock rules in
+   /usr/lib/filetype/default. If the icon does not appear, `ftr -v` on the
+   rule file reports syntax errors.

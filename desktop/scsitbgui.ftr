@@ -1,0 +1,40 @@
+#
+# scsitbgui.ftr - desktop File Typing Rules for the SCSI Toolbox GUI.
+#
+# Install into /usr/lib/filetype/local/ (see docs/HOWTO-IRIS.txt). This is what
+# gives the EXECUTABLE an icon in the Icon Catalog and file manager - a separate
+# mechanism from the window-manager icon the program sets on itself, which only
+# appears when the window is iconified.
+#
+# Matched on name rather than a magic tag: the binary carries no registered SGI
+# application tag, and inventing one risks colliding with a real product's.
+#
+
+TYPE scsitbgui
+    MATCH       glob("scsitbgui");
+    LEGEND      SCSI Toolbox
+    SUPERTYPE   Executable
+    CMD OPEN    $LEADER
+    CMD ALTOPEN $LEADER
+    ICON {
+        if (opened) {
+            include("../iconlib/generic.exec.open.fti");
+        } else {
+            include("../iconlib/generic.exec.closed.fti");
+        }
+        include("iconlib/scsitbgui.fti");
+    }
+
+TYPE irixscsitb
+    MATCH       glob("irixscsitb");
+    LEGEND      SCSI Toolbox (command line)
+    SUPERTYPE   Executable
+    CMD OPEN    winterm -c $LEADER
+    ICON {
+        if (opened) {
+            include("../iconlib/generic.exec.open.fti");
+        } else {
+            include("../iconlib/generic.exec.closed.fti");
+        }
+        include("iconlib/scsitbgui.fti");
+    }
