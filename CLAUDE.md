@@ -527,6 +527,25 @@ the real 5.3 Makefile, the build against a stub `make`, and the installer
 against a fake tree via the `FTDIR`/`CHESTDIR`/`BINDIR` overrides that exist
 for exactly that purpose.
 
+## Wrapping a build in EFS (CD / HDD image)
+
+```sh
+scripts/make-efs-iso.sh --tar output/irixscsitb-<rev>.tar [--hdd]
+```
+
+Host-side (rb-cli is a host tool). Takes whatever `build.sh` packaged and wraps
+it in an IRIX EFS CD image, optionally an SGI `.hda` too. Distinct from
+`scripts/package.sh`, which builds release artifacts around a bare binary.
+
+It puts **both** the extracted tree and the `.tar` itself on the disc, and the
+reason matters: **EFS stores everything mode 0644.** An execute bit does not
+survive being written into the filesystem — not via `put`, not via `untar`
+(verified with `rb-cli ls -o`). So the extracted tree is browsable but nothing
+in it is runnable in place. The `.tar` beside it *is* mode-preserving, because
+tar carries modes in its own headers — verified by pulling it back off the image
+and checking the bits came out `0755`. Hence the IRIX recipe is
+`tar xvf /CDROM/<pkg>.tar` rather than running anything off the mount.
+
 ## Syncing to the IRIX/IRIS drop folder
 
 ```sh
