@@ -96,6 +96,11 @@ then ./irixscsitb ...  (the examples below).
 ------------------------
 To put the tools on the system properly, as root:
 
+Run these as ./install.sh (or sh ./install.sh). csh is the default login shell
+on IRIX 5.3, but that does not matter - the #!/bin/sh line picks the shell. Do
+NOT run them as "csh install.sh": csh treats #! as a comment and then chokes on
+Bourne syntax. Same goes for build.sh and uninstall.sh.
+
    cd output
    ./install.sh                     # binaries -> /usr/sbin, plus desktop icons
    BINDIR=/usr/bin/X11 ./install.sh # somewhere else

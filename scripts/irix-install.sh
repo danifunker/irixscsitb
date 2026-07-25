@@ -20,8 +20,16 @@
 #      icon in the Icon Catalog and file manager. The desktop reads its type
 #      database only at startup, so this one needs a reboot.
 #
-# Written for the IRIX 5.3 /bin/sh (Bourne shell): backticks, no $( ), no
-# 'local', no arithmetic, no 'command -v'.
+# INVOKING IT: run "./install.sh" or "sh ./install.sh". The #!/bin/sh line is
+# what selects the shell, so csh being the default LOGIN shell on IRIX 5.3
+# makes no difference. Do NOT run it as "csh install.sh" or source it from
+# csh - csh reads the #! line as a comment and then chokes on Bourne syntax.
+#
+# This is Bourne/POSIX only, verified by running it under dash: backticks not
+# $( ), no $(( )), no [[ ]], no local/declare/source, no echo -n or -e, no
+# arrays, no += , no ${var/x/y}. The one construct newer than V7 sh is the
+# shell function, which SVR2 added a decade before IRIX 5.3 shipped.
+#
 
 # /usr/sbin, not /usr/local/bin. Both tools need root to open the generic SCSI
 # nodes, /usr/sbin is where IRIX keeps administrative binaries, and - the part

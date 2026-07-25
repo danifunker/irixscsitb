@@ -14,8 +14,16 @@
 # testing, which is when you run it repeatedly and half-installed states are
 # normal.
 #
-# Written for the IRIX 5.3 /bin/sh (Bourne shell): backticks, no $( ), no
-# 'local', no arithmetic, no 'command -v', and no reliance on 'id -u'.
+# INVOKING IT: run "./uninstall.sh" or "sh ./uninstall.sh". The #!/bin/sh line
+# is what selects the shell, so csh being the default LOGIN shell on IRIX 5.3
+# makes no difference. Do NOT run it as "csh uninstall.sh" or source it from
+# csh - csh reads the #! line as a comment and then chokes on Bourne syntax.
+#
+# This is Bourne/POSIX only, verified by running it under dash: backticks not
+# $( ), no $(( )), no [[ ]], no local/declare/source, no echo -n or -e, no
+# arrays, no += , no ${var/x/y}. The one construct newer than V7 sh is the
+# shell function, which SVR2 added a decade before IRIX 5.3 shipped.
+#
 
 FTDIR=${FTDIR:-/usr/lib/filetype/local}
 CHESTDIR=${CHESTDIR:-/usr/lib/X11/app-chests}
