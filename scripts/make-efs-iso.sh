@@ -69,7 +69,14 @@ command -v "$RB" >/dev/null 2>&1 || [ -x "$RB" ] || \
 	die "this rb-cli lacks 'untar' - update it"
 
 TARBASE=`basename "$TARFILE"`
-PKGDIR=`basename "$TARBASE" .tar`   # the tarball's single root directory
+
+# The directory the tarball unpacks into. Read from the ARCHIVE, not derived
+# from its filename - the two diverge the moment anyone renames the .tar, and
+# then the printed "cd <dir>" sends you somewhere that does not exist.
+PKGDIR=`tar tf "$TARFILE" 2>/dev/null | sed -n '1s|/.*||p'`
+if [ -z "$PKGDIR" ]; then
+	PKGDIR=`basename "$TARBASE" .tar`
+fi
 if [ -z "$OUT" ]; then
 	OUT=`dirname "$TARFILE"`/`basename "$TARBASE" .tar`.iso
 fi
