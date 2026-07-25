@@ -42,7 +42,12 @@
 #   output/irixscsitb-<rev>.tar.gz   all of the above, ready to distribute
 #   output/build-<stamp>.log         full log (+ build-latest.log)
 #
-# The binaries also stay in $HOME/irixscsitb-build; run them from there.
+# The same set is staged on LOCAL disk at
+# $HOME/irixscsitb-build/irixscsitb-<rev>/, and that is the copy to install
+# from: an NFS share generally will not keep an execute bit on a file the guest
+# created, so output/install.sh often ends up non-executable even though the
+# script chmods it. output/ is for the host to pick up; the local copy is for
+# running.
 
 # Where the sources + this script live (the NFS share).  Taken from $0 - do NOT
 # pwd it (getcwd fails over NFS).  May be relative (e.g. "."), which is fine:
@@ -187,7 +192,7 @@ if [ -x "$BUILDDIR/irixscsitb" ]; then
 
 	echo "" | tee -a "$LOG"
 	echo "To install on this machine (as root):" | tee -a "$LOG"
-	echo "  cd $OUT && ./install.sh" | tee -a "$LOG"
+	echo "  cd $PKG && ./install.sh" | tee -a "$LOG"
 	echo "" | tee -a "$LOG"
 	echo "Or run straight from local disk without installing:" | tee -a "$LOG"
 	echo "  cd $BUILDDIR"                            | tee -a "$LOG"
@@ -221,6 +226,20 @@ done
 [ -f "$PKG/desktop/iconlib/scsitbgui.fti" ] && cp "$PKG/desktop/iconlib/scsitbgui.fti" "$OUT/desktop/iconlib"/ 2>/dev/null
 [ -f "$BUILDDIR/$TARBALL" ] && cp "$BUILDDIR/$TARBALL" "$OUT"/ 2>/dev/null
 chmod 755 "$OUT/install.sh" "$OUT/uninstall.sh" 2>/dev/null
+
+# The share is very often an NFS mount that will not keep an execute bit on a
+# file the guest creates - the chmod above silently does nothing. Then
+# ./install.sh gives "permission denied" while /bin/sh ./install.sh works,
+# which is a genuinely confusing pair of symptoms. Check, and say so.
+if [ -f "$OUT/install.sh" ] && [ ! -x "$OUT/install.sh" ]; then
+	echo "" | tee -a "$LOG"
+	echo "NOTE: $OUT does not keep the execute bit (an NFS share usually" | tee -a "$LOG"
+	echo "      will not), so $OUT/install.sh is not directly runnable." | tee -a "$LOG"
+	echo "      Use the local copy, which is executable:" | tee -a "$LOG"
+	echo "          cd $PKG && ./install.sh" | tee -a "$LOG"
+	echo "      or run the share copy through the shell:" | tee -a "$LOG"
+	echo "          sh $OUT/install.sh" | tee -a "$LOG"
+fi
 
 echo "Artifacts in $OUT:" | tee -a "$LOG"
 ls "$OUT" 2>/dev/null | tee -a "$LOG"

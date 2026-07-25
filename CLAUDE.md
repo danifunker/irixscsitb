@@ -380,6 +380,16 @@ a fragment add a top-level item. The fragment is *generated* by the installer
 rather than shipped static, because the path has to match wherever `BINDIR` put
 the binary. `f.checkexec.sh` means the entry hides itself if the binary is gone.
 
+**Install from the local staged copy, not from `output/`.** An NFS share
+generally will not keep an execute bit on a file the *guest* created, so
+`output/install.sh` ends up non-executable even though `build.sh` chmods it —
+the chmod silently does nothing. The symptom is confusing: `./install.sh` gives
+permission denied while `/bin/sh ./install.sh` works, and `build.sh` itself runs
+fine because *it* was made executable on the host by `sync-irix-drop.sh`. The
+same package is staged on local disk at
+`$HOME/irixscsitb-build/irixscsitb-<rev>/`, where the exec bit sticks;
+`build.sh` points at that and warns when the share copy is not executable.
+
 `scripts/irix-uninstall.sh` ships as `output/uninstall.sh` and reverses all
 three, including taking its own line back out of the filetype Makefile (by
 filtering, *not* by restoring install.sh's backup — that would discard anything

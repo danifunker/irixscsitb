@@ -101,7 +101,9 @@ on IRIX 5.3, but that does not matter - the #!/bin/sh line picks the shell. Do
 NOT run them as "csh install.sh": csh treats #! as a comment and then chokes on
 Bourne syntax. Same goes for build.sh and uninstall.sh.
 
-   cd output
+Install from the LOCAL copy, not from output/ on the share:
+
+   cd $HOME/irixscsitb-build/irixscsitb-<rev>
    ./install.sh                     # binaries -> /usr/sbin, plus desktop icons
    BINDIR=/usr/bin/X11 ./install.sh # somewhere else
    PREFIX=/usr/local ./install.sh   # prefix style: <prefix>/bin
@@ -136,10 +138,18 @@ them shows up:
 
 A reboot covers both, which is what the script asks for at the end.
 
+WHY THE LOCAL COPY: an NFS share generally will not keep an execute bit on a
+file the guest created, so output/install.sh often ends up non-executable even
+though build.sh chmods it. The symptom is confusing - "./install.sh" gives
+permission denied while "/bin/sh ./install.sh" works fine, and build.sh itself
+runs because IT was made executable on the host, not by the guest. build.sh now
+detects this and tells you. Either use the local copy above, or run the share
+copy as "sh output/install.sh".
+
 To remove it all again - useful while testing, since you will be reinstalling
 over and over:
 
-   cd output
+   cd $HOME/irixscsitb-build/irixscsitb-<rev>
    DRYRUN=1 ./uninstall.sh   # list what would go, touch nothing
    ./uninstall.sh            # actually remove it (as root)
 
