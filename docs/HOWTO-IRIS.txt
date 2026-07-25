@@ -131,6 +131,23 @@ them shows up:
 
 A reboot covers both, which is what the script asks for at the end.
 
+To remove it all again - useful while testing, since you will be reinstalling
+over and over:
+
+   cd output
+   DRYRUN=1 ./uninstall.sh   # list what would go, touch nothing
+   ./uninstall.sh            # actually remove it (as root)
+
+It takes out the binaries, the Toolchest fragment, the icon rules, and its own
+line from the filetype Makefile, then rebuilds the type database. It searches
+the usual binary directories rather than only the default, so an install made
+with BINDIR=... is still found. Safe to run when nothing is installed and safe
+to run twice - everything reports "not present" instead of failing.
+
+It leaves install.sh's Makefile backup (Makefile.presrmtoolbox) alone and says
+so: restoring that wholesale would throw away anything else installed since.
+It filters out just its own line instead.
+
 You do NOT have to install anything to test - the binaries run fine from
 $HOME/irixscsitb-build or from output/.
 

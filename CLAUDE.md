@@ -380,6 +380,13 @@ a fragment add a top-level item. The fragment is *generated* by the installer
 rather than shipped static, because the path has to match wherever `BINDIR` put
 the binary. `f.checkexec.sh` means the entry hides itself if the binary is gone.
 
+`scripts/irix-uninstall.sh` ships as `output/uninstall.sh` and reverses all
+three, including taking its own line back out of the filetype Makefile (by
+filtering, *not* by restoring install.sh's backup — that would discard anything
+else installed since). It searches the plausible binary directories rather than
+only the default, so a `BINDIR=` install is still found. `DRYRUN=1` lists
+without touching, and needs no root.
+
 The FTR Makefile patch inserts before the `${NULL}` terminator of `FTR_FILES`
 using `awk index()` (no `${...}` escaping), keeps a backup, and is idempotent.
 Both it and the whole `build.sh` flow are tested off-target — the awk against

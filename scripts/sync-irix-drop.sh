@@ -57,6 +57,7 @@ cp "$REPO/scripts/mkversion.sh" "$DEST/scripts/mkversion.sh"
 # The installer and the desktop icon rules it puts in place. build.sh copies
 # these into the staged package, so they have to be here before it runs.
 cp "$REPO/scripts/irix-install.sh" "$DEST/install.sh"
+cp "$REPO/scripts/irix-uninstall.sh" "$DEST/uninstall.sh"
 mkdir -p "$DEST/desktop/iconlib"
 cp "$REPO/desktop/scsitbgui.ftr" "$DEST/desktop/scsitbgui.ftr"
 cp "$REPO/desktop/iconlib/scsitbgui.fti" "$DEST/desktop/iconlib/scsitbgui.fti"
@@ -64,7 +65,7 @@ cp "$REPO/desktop/iconlib/scsitbgui.fti" "$DEST/desktop/iconlib/scsitbgui.fti"
 # The build driver and its instructions, renamed to what the HOWTO documents.
 cp "$REPO/scripts/irix-native-build.sh" "$DEST/build.sh"
 cp "$REPO/docs/HOWTO-IRIS.txt" "$DEST/HOWTO-IRIS.txt"
-chmod +x "$DEST/build.sh" "$DEST/scripts/mkversion.sh" "$DEST/install.sh"
+chmod +x "$DEST/build.sh" "$DEST/scripts/mkversion.sh" "$DEST/install.sh" "$DEST/uninstall.sh"
 
 # The output folder used to be called build/. Leave any old one alone rather
 # than deleting someone's artifacts, but say so - two of them is confusing.

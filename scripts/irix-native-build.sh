@@ -36,6 +36,7 @@
 #   output/irixscsitb                the CLI binary
 #   output/scsitbgui                 the Motif GUI binary (if it built)
 #   output/install.sh                installer - run as root on the target
+#   output/uninstall.sh              removes everything the installer added
 #   output/desktop/                  desktop icon rules the installer needs
 #   output/README.md
 #   output/irixscsitb-<rev>.tar.gz   all of the above, ready to distribute
@@ -111,6 +112,7 @@ cp "$SRCDIR/scripts/mkversion.sh" "$BUILDDIR/scripts"/ 2>/dev/null
 # desktop icon rules it puts in place.
 mkdir -p "$BUILDDIR/desktop/iconlib" 2>/dev/null
 cp "$SRCDIR/install.sh" "$BUILDDIR"/ 2>/dev/null
+cp "$SRCDIR/uninstall.sh" "$BUILDDIR"/ 2>/dev/null
 cp "$SRCDIR/desktop/scsitbgui.ftr" "$BUILDDIR/desktop"/ 2>/dev/null
 cp "$SRCDIR/desktop/iconlib/scsitbgui.fti" "$BUILDDIR/desktop/iconlib"/ 2>/dev/null
 
@@ -169,11 +171,12 @@ if [ -x "$BUILDDIR/irixscsitb" ]; then
 	[ -x "$BUILDDIR/scsitbgui" ] && cp "$BUILDDIR/scsitbgui" "$PKG"/ 2>/dev/null
 	[ -f "$BUILDDIR/README.md" ] && cp "$BUILDDIR/README.md" "$PKG"/ 2>/dev/null
 	[ -f "$BUILDDIR/install.sh" ] && cp "$BUILDDIR/install.sh" "$PKG"/ 2>/dev/null
+	[ -f "$BUILDDIR/uninstall.sh" ] && cp "$BUILDDIR/uninstall.sh" "$PKG"/ 2>/dev/null
 	[ -f "$BUILDDIR/desktop/scsitbgui.ftr" ] && \
 		cp "$BUILDDIR/desktop/scsitbgui.ftr" "$PKG/desktop"/ 2>/dev/null
 	[ -f "$BUILDDIR/desktop/iconlib/scsitbgui.fti" ] && \
 		cp "$BUILDDIR/desktop/iconlib/scsitbgui.fti" "$PKG/desktop/iconlib"/ 2>/dev/null
-	chmod 755 "$PKG/install.sh" 2>/dev/null
+	chmod 755 "$PKG/install.sh" "$PKG/uninstall.sh" 2>/dev/null
 
 	TARBALL="irixscsitb-$REV.tar.gz"
 
@@ -211,13 +214,13 @@ fi
 # a (possibly NFS) directory - no getcwd needed anywhere here.
 echo ">>> copying results into $OUT" | tee -a "$LOG"
 mkdir -p "$OUT/desktop/iconlib" 2>/dev/null
-for f in irixscsitb scsitbgui README.md install.sh; do
+for f in irixscsitb scsitbgui README.md install.sh uninstall.sh; do
 	[ -f "$PKG/$f" ] && cp "$PKG/$f" "$OUT"/ 2>/dev/null
 done
 [ -f "$PKG/desktop/scsitbgui.ftr" ] && cp "$PKG/desktop/scsitbgui.ftr" "$OUT/desktop"/ 2>/dev/null
 [ -f "$PKG/desktop/iconlib/scsitbgui.fti" ] && cp "$PKG/desktop/iconlib/scsitbgui.fti" "$OUT/desktop/iconlib"/ 2>/dev/null
 [ -f "$BUILDDIR/$TARBALL" ] && cp "$BUILDDIR/$TARBALL" "$OUT"/ 2>/dev/null
-chmod 755 "$OUT/install.sh" 2>/dev/null
+chmod 755 "$OUT/install.sh" "$OUT/uninstall.sh" 2>/dev/null
 
 echo "Artifacts in $OUT:" | tee -a "$LOG"
 ls "$OUT" 2>/dev/null | tee -a "$LOG"
