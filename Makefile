@@ -8,7 +8,7 @@ OBJS =
 # tarball, logs - is collected under $(BUILDDIR) (output/). All .gitignore'd so
 # the tree stays clean even when the repo itself is shared out over NFS.
 BUILDDIR = output
-TARNAME  = irixscsitb.tar.gz
+TARNAME  = irixscsitb.tar
 
 # MUST be the first target in this file: make takes the first rule it sees as
 # the default goal, so anything above this (the version.h/buildhost.h rules,
@@ -122,16 +122,18 @@ irix-gui-n32:
 		OBJS="gui_motif.o toolbox.o version.o irix.o" \
 		CFLAGS="-mips3 -n32 -O2 -DOS_IRIX -DBUILD_N32" LDFLAGS="$(GUILIBS)"
 
-# Build (auto-detecting the OS) then package the binary + README into
-# $(BUILDDIR)/$(TARNAME) for easy distribution. Uses `tar cf - | gzip` rather
-# than `tar czf` because IRIX 5.3 tar has no `z` flag; gzip must be on PATH.
+# Build (auto-detecting the OS) then package the binaries + README into
+# $(BUILDDIR)/$(TARNAME). Plain tar, not tar.gz: IRIX 5.3's tar can neither
+# create nor extract compressed archives, so a .gz would need gzip at both ends
+# and "gunzip -c f | tar xvf -" to unpack. The payload is small enough that
+# compressing it is not worth the dependency.
 # README.md is included only if present (it isn't in the CI scratch build dir).
 tar: default
 	@mkdir -p $(BUILDDIR); \
 	files="irixscsitb"; \
 	if [ -f scsitbgui ]; then files="$$files scsitbgui"; fi; \
 	if [ -f README.md ]; then files="$$files README.md"; fi; \
-	tar cf - $$files | gzip -c > $(BUILDDIR)/$(TARNAME); \
+	tar cf $(BUILDDIR)/$(TARNAME) $$files; \
 	echo "*** Packaged $(BUILDDIR)/$(TARNAME)"
 
 # Host-side smoke test. Builds irixscsitb.c against tests/mock_os.c - a fake SCSI

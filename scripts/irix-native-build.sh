@@ -39,7 +39,8 @@
 #   output/uninstall.sh              removes everything the installer added
 #   output/desktop/                  desktop icon rules the installer needs
 #   output/README.md
-#   output/irixscsitb-<rev>.tar.gz   all of the above, ready to distribute
+#   output/irixscsitb-<rev>.tar      all of the above (plain tar: IRIX 5.3
+#                                    tar cannot decompress, so no gzip)
 #   output/build-<stamp>.log         full log (+ build-latest.log)
 #
 # The same set is staged on LOCAL disk at
@@ -183,18 +184,19 @@ if [ -x "$BUILDDIR/irixscsitb" ]; then
 		cp "$BUILDDIR/desktop/iconlib/scsitbgui.fti" "$PKG/desktop/iconlib"/ 2>/dev/null
 	chmod 755 "$PKG/install.sh" "$PKG/uninstall.sh" 2>/dev/null
 
-	TARBALL="irixscsitb-$REV.tar.gz"
+	TARBALL="irixscsitb-$REV.tar"
 
-	# Packed locally where getcwd works (gzip must be on PATH; IRIX 5.3 tar
-	# has no z flag). Non-fatal - the loose binaries are still delivered.
+	# Plain tar, deliberately NOT tar.gz. IRIX 5.3's tar cannot decompress,
+	# so a .tar.gz needs "gunzip -c f | tar xvf -" at the other end, and
+	# packing one needs gzip on PATH here. The payload is ~140K; compressing
+	# it would save well under 100K and cost a dependency at both ends.
 	echo ">>> packaging $TARBALL" | tee -a "$LOG"
-	( cd "$BUILDDIR" && tar cf - "irixscsitb-$REV" | gzip -c > "$TARBALL" ) 2>&1 | tee -a "$LOG"
+	( cd "$BUILDDIR" && tar cf "$TARBALL" "irixscsitb-$REV" ) 2>&1 | tee -a "$LOG"
 
 	echo "" | tee -a "$LOG"
-	echo "The tarball is for moving to ANOTHER machine. IRIX 5.3 tar has no z" | tee -a "$LOG"
-	echo "flag, so unpack it with a pipe (use gunzip -c, not zcat - zcat here" | tee -a "$LOG"
-	echo "is the compress/.Z one):" | tee -a "$LOG"
-	echo "  gunzip -c $TARBALL | tar xvf -" | tee -a "$LOG"
+	echo "The tarball is for moving to ANOTHER machine. It is plain tar, not" | tee -a "$LOG"
+	echo "gzipped, so IRIX unpacks it directly - no pipe, no gzip needed:" | tee -a "$LOG"
+	echo "  tar xvf $TARBALL" | tee -a "$LOG"
 	echo "" | tee -a "$LOG"
 	echo "To install on this machine (as root):" | tee -a "$LOG"
 	echo "  cd $PKG && ./install.sh" | tee -a "$LOG"

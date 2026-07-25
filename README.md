@@ -90,7 +90,7 @@ makes easy — for the IRIS emulator or real SGI/BlueSCSI hardware:
 
 | Artifact | What it is | How to use |
 |----------|-----------|------------|
-| `irixscsitb-*.tar.gz` | binaries (`o32` + `n32`) + README | Easiest with the IRIS emulator's built-in NFS server: point `[nfs] shared_dir` at a folder, drop the extracted files in, then inside IRIX `mount 192.168.0.1:/ /mnt && cp /mnt/irixscsitb-o32 /usr/local/bin/irixscsitb`. Also works over ftp/rcp. Carries the executable bit. |
+| `irixscsitb-*.tar` | binaries (`o32` + `n32`) + README (plain tar — IRIX 5.3 cannot extract `.gz`) | Easiest with the IRIS emulator's built-in NFS server: point `[nfs] shared_dir` at a folder, drop the extracted files in, then inside IRIX `mount 192.168.0.1:/ /mnt && cp /mnt/irixscsitb-o32 /usr/local/bin/irixscsitb`. Also works over ftp/rcp. Carries the executable bit. |
 | `irixscsitb-*.iso` | IRIX EFS CD-ROM image | Attach as a CD in IRIS (`cdrom = true`) or burn it. On IRIX: `mount -t efs -o ro /dev/dsk/dks0d<N>s7 /CDROM`, then copy `irixscsitb` off and `chmod +x` it. |
 | `irixscsitb-*.hda` | SGI EFS hard-disk image (dvh + EFS root) | Attach as a SCSI disk in IRIS (`cdrom = false`). Mount the EFS root, copy `irixscsitb` off, `chmod +x`. |
 

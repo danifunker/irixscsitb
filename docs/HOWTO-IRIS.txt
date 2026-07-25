@@ -70,15 +70,15 @@ on the Mac too and stays out of the repo if the repo itself is the NFS share
    output/install.sh                installer - run as root, see section 3
    output/desktop/                  desktop icon rules the installer needs
    output/README.md
-   output/irixscsitb-<rev>.tar.gz   all of the above in one file, ready to
-                                    copy to another machine and unpack. IRIX
-                                    5.3 tar has NO z flag, so "tar xzf" fails -
-                                    unpack it with a pipe:
-                                       gunzip -c irixscsitb-<rev>.tar.gz | tar xvf -
-                                    (gunzip -c, not zcat: on IRIX zcat is the
-                                    compress/.Z one, not gzip's.) You do not
-                                    need the tarball on THIS machine - the
-                                    files are already unpacked next to it.
+   output/irixscsitb-<rev>.tar      all of the above in one file, for copying
+                                    to another machine. Plain tar, NOT gzipped,
+                                    because IRIX 5.3's tar cannot decompress -
+                                    so unpacking is just:
+                                       tar xvf irixscsitb-<rev>.tar
+                                    You do not need it on THIS machine; the
+                                    files are already unpacked next to it. Its
+                                    real use is that tar preserves the execute
+                                    bits an NFS share drops.
    output/build-<stamp>.log         full log (+ build-latest.log)
 
 The binaries also stay in $HOME/irixscsitb-build; you can run them straight

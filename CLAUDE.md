@@ -223,10 +223,13 @@ IRIX path; otherwise it needs real hardware.
 - **No `usleep(3)` on 5.3** — it compiles but fails to *link* (`ld: Unresolved:
   usleep`). `irix.c` uses a `select()`-based `ms_sleep()` helper instead, which
   links across 5.3–6.5. Reach for `select()`/`sginap()`, not `usleep`/`nanosleep`.
-- **IRIX 5.3 `tar` has no `z` flag.** `tar xzf` fails; unpack with
-  `gunzip -c foo.tar.gz | tar xvf -`. And use `gunzip -c`, not `zcat` — on IRIX
-  `zcat` is the `compress`/`.Z` one. This is why `make tar` and `build.sh` both
-  pack with `tar cf - | gzip -c` rather than `tar czf`.
+- **IRIX 5.3 `tar` can neither create nor extract compressed archives** — there
+  is no `z` flag, so `tar xzf` fails. Both `make tar` and `build.sh` therefore
+  emit a **plain `.tar`**, which IRIX unpacks with a bare `tar xvf foo.tar`:
+  no pipe, and no gzip needed at either end. (If you ever do meet a `.tar.gz`
+  here, it is `gunzip -c foo.tar.gz | tar xvf -` — `gunzip -c`, not `zcat`,
+  which on IRIX is the `compress`/`.Z` one.) The payload is ~140 KB; compressing
+  it would save under 100 KB and cost a dependency on both ends.
 - **No `snprintf(3)` on 5.3 either** — verified absent from both `<stdio.h>` and
   `libc.so.1` on a real 5.3 install, so it fails to link the same way `usleep`
   does. There is therefore *no* size-limited formatter available. The way to keep
