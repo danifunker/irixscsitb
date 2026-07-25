@@ -191,6 +191,11 @@ if [ -x "$BUILDDIR/irixscsitb" ]; then
 	( cd "$BUILDDIR" && tar cf - "irixscsitb-$REV" | gzip -c > "$TARBALL" ) 2>&1 | tee -a "$LOG"
 
 	echo "" | tee -a "$LOG"
+	echo "The tarball is for moving to ANOTHER machine. IRIX 5.3 tar has no z" | tee -a "$LOG"
+	echo "flag, so unpack it with a pipe (use gunzip -c, not zcat - zcat here" | tee -a "$LOG"
+	echo "is the compress/.Z one):" | tee -a "$LOG"
+	echo "  gunzip -c $TARBALL | tar xvf -" | tee -a "$LOG"
+	echo "" | tee -a "$LOG"
 	echo "To install on this machine (as root):" | tee -a "$LOG"
 	echo "  cd $PKG && ./install.sh" | tee -a "$LOG"
 	echo "" | tee -a "$LOG"
