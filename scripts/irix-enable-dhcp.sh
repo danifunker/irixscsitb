@@ -2,8 +2,8 @@
 # Enable DHCP (proclaim) on an IRIX 5.3 disk image by turning on the two
 # chkconfig flags that gate network startup and the DHCP client.
 #
-# Usage: irix-enable-dhcp.sh [IMAGE]
-#   IMAGE defaults to the known ULTRA64 2GIG disk.
+# Usage: irix-enable-dhcp.sh IMAGE
+#   IMAGE is required - any installed IRIX 5.3 boot disk.
 #   IMAGE may be a .chd or a raw file. CHD images are extracted to a temp
 #   raw file, modified, and repacked in place. Any sibling .diff.chd is
 #   deleted (it would be stale after the base CHD changes).
@@ -19,7 +19,10 @@ set -e
 RB="${RB_CLI:-rb-cli}"
 CHDMAN="${CHDMAN:-chdman}"
 
-IMAGE="${1:-/Users/dani/Documents/ULTRA64_2GIG_SCSI_IRIX53_shrunk.chd}"
+# Required. There is deliberately no default: a default pointing at one
+# person's local disk image is useless to everyone else and leaks a path.
+IMAGE="${1:-}"
+[ -n "$IMAGE" ] || { echo "usage: $0 IMAGE   (an installed IRIX 5.3 boot disk, .chd or raw)" >&2; exit 1; }
 # Strip any @N suffix for the file-level operations; we always target @1.
 BASE_IMAGE="${IMAGE%%@*}"
 

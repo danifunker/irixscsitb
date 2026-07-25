@@ -105,9 +105,12 @@ irix-n32:
 # carries - so the o32 build runs across the whole 5.3-6.5 range. Link order
 # matters on IRIX: Sgm before Xm before Xt before X11.
 #
-# -lSgm pulls in SGI's Motif extension widgets. It is present on 5.3 and 6.x
-# alike; drop it from GUILIBS if you ever target a system without them.
-GUILIBS = -lSgm -lXm -lXt -lXext -lX11 -lm
+# Plain Motif only. -lSgm (SGI's Motif extension widgets) was here, but
+# gui_motif.c includes no <Sgm/...> header and calls no Sg* function, so it was
+# linking a library it never used - and making the GUI refuse to build on any
+# IRIX that has Motif without SGI's extensions. Add it back only alongside an
+# actual SgFinder/SgGrid/etc. use.
+GUILIBS = -lXm -lXt -lXext -lX11 -lm
 
 irix-gui-o32:
 	$(MAKE) scsitbgui \

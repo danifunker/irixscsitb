@@ -21,7 +21,7 @@
 #       (cd ../iris && cargo build --release --features chd)
 #   - an installed IRIX 5.3 (or 6.5) boot disk with the IDO dev option (cc/make +
 #     headers) AND networking up so it can mount NFS. For the recommended
-#     ULTRA64 5.3 image, enable DHCP once with scripts/irix-enable-dhcp.sh; the
+#     5.3 boot disk, enable DHCP once with scripts/irix-enable-dhcp.sh; the
 #     IRIS NAT then hands it 192.168.0.2 and answers NFS at the gateway
 #     192.168.0.1. Real hardware just needs a working IP.
 #   - rb-cli with the `optical new sgi-efs` + `new hd sgi-efs` verbs

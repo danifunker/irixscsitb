@@ -28,7 +28,7 @@ Pick whichever is easier for your IRIS setup.
 
 A) IRIS built-in NFS (recommended - lets you edit on the Mac, rebuild in IRIX):
    Point IRIS at this folder, e.g. launch with
-       --nfs-dir /Users/dani/Downloads/irixscsitb53
+       --nfs-dir /path/to/this/folder
    (or set [nfs] shared_dir to it in your TOML). Then inside IRIX, as root:
        mkdir -p /mnt
        mount 192.168.0.1:/ /mnt          # older clients: mount -o vers=2 ...

@@ -9,16 +9,16 @@
 #
 # NETWORKING PREREQUISITE: NFS needs an IP inside the guest. The IRIS NAT hands
 # out 192.168.0.2 via DHCP and answers NFS at the gateway 192.168.0.1 — but the
-# guest must be configured to ask. For the recommended ULTRA64 5.3 image, run
-# scripts/irix-enable-dhcp.sh against the boot disk ONCE before first use.
+# guest must be configured to ask. Run scripts/irix-enable-dhcp.sh against the
+# boot disk ONCE before first use.
 #
-# RECOMMENDED BASE DISK: the "ULTRA64 2GIG SCSI IRIX 5.3" image — an installed
-# 5.3 system that already has the IDO developer option (cc / make / headers), so
-# `make` Just Works inside the guest. It's published as a .zip on archive.org;
-# download + unzip and point scsi.1.path at the resulting .chd (or drop it next
-# to wherever iris runs as `irix53.chd`). In CI: fetch the zip, unzip, set the
-# path. Paths here are relative to iris's working dir — use absolute paths if you
-# run iris from elsewhere.
+# BASE DISK: any installed IRIX 5.3 system that has the developer option (IDO:
+# cc, make, headers) so `make` works inside the guest, plus the Motif
+# development environment if you want the GUI built too. Supply your own - no
+# particular image is required or shipped here, and none is referenced by name.
+# Point scsi.1.path at your .chd, or drop it next to wherever iris runs as
+# `irix53.chd`. Paths here are relative to iris's working dir - use absolute
+# paths if you run iris from elsewhere.
 
 headless   = true                   # no window; --ci also renders offscreen
 no_audio   = true
@@ -26,7 +26,7 @@ banks      = [128, 128, 0, 0]
 nvram      = "nvram-irix53-ci.bin"  # iris seeds a default on first run
 serial_log = "iris-ci-console.log"
 
-# The installed IRIX 5.3 boot disk (ULTRA64 ...IRIX53 .chd).
+# The installed IRIX 5.3 boot disk (supply your own; see above).
 [scsi.1]
 path  = "irix53.chd"
 cdrom = false

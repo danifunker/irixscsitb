@@ -10,7 +10,13 @@ It is the IRIX/Linux counterpart to
 the same firmware), and started life as a fork of
 [SonnyJim/bstoolbox](https://github.com/SonnyJim/bstoolbox).
 
-Download the files and run `make`; it produces an `irixscsitb` binary. Targets:
+Download the files and run `make`. On IRIX that builds both the CLI and the
+Motif GUI; `NOGUI=1 make` builds the CLI alone.
+
+**To rebuild on any IRIX machine** you need MIPSpro/IDO (`cc`, `make`) for the
+CLI, plus the Motif development environment (`/usr/include/Xm`, `libXm`) for the
+GUI. A machine without Motif dev still gets a working CLI — the GUI link failing
+is treated as non-fatal. Targets:
 
 | Host | Status |
 |------|--------|

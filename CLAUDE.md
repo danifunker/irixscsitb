@@ -68,6 +68,31 @@ paths), `path_to_devnum` (device path → SCSI ID), `mediad_start` /
 `mediad_stop`. When adding a feature, keep protocol logic in `toolbox.c` and
 only touch `irix.c`/`linux.c` for transport.
 
+## What a build machine needs
+
+The point is that **any** IRIX box with the right dev kit can rebuild this — no
+particular disk image, and nothing hardcoded to one machine.
+
+| For | Needs |
+|---|---|
+| CLI (`irixscsitb`) | IRIX 5.3–6.5, MIPSpro/IDO `cc`, `make`. Nothing else. |
+| GUI (`scsitbgui`) | the above **plus** the Motif development environment — `/usr/include/Xm` and `libXm`. Plain Motif 1.2 is enough. |
+| Running either | root, for the generic SCSI nodes |
+
+The GUI links `-lXm -lXt -lXext -lX11 -lm` and deliberately **not** `-lSgm`: no
+`Sg*` symbol is used, and linking it would rule out any IRIX carrying Motif
+without SGI's extensions. `make` builds both and treats a failed GUI link as
+non-fatal, so a machine without Motif dev still gets a working CLI.
+
+Install locations are all overridable (`BINDIR`, `PREFIX`, `FTDIR`,
+`CHESTDIR`); the only absolute paths the code itself assumes are `/dev/scsi/sc*`
+and `/etc/mtab`, both standard IRIX.
+
+**No personal paths or disk-image names belong anywhere in this repo.**
+`scripts/irix-enable-dhcp.sh` therefore *requires* its image argument rather
+than defaulting to one — a default pointing at one person's local file is
+useless to everyone else and leaks a path.
+
 ## Build & run
 
 ```sh
@@ -291,7 +316,7 @@ What a stock 5.3 actually has (all confirmed present):
 |-------|--------|
 | Motif | `libXm.so.1`, 121 headers in `/usr/include/Xm` |
 | X11 | `libXt`, `libX11`, `libXext`, `libXmu`, `libXi` |
-| SGI extensions | `/usr/include/Sgm` + `libSgm.so.1` — `SgFinder`, `SgGrid`, `SgThumbWheel`, … |
+| SGI extensions | `/usr/include/Sgm` + `libSgm.so.1` — present, but **not linked**: nothing uses `Sg*`, and linking it would exclude any IRIX without SGI's Motif extensions |
 | SGI look | `/usr/lib/X11/schemes/` (IndigoMagic et al), `Xsgi`, `4Dwm` |
 
 **ViewKit is runtime-only** — `libvk.so.1` ships but there is no

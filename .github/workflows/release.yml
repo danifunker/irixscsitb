@@ -21,8 +21,8 @@ name: Release
 #
 # REQUIRED CONFIG (Settings > Secrets and variables > Actions):
 #   secret IRIX53_DISK_URL     URL to an installed IRIX 5.3 boot disk with the IDO
-#                              dev option — a bare `.chd` or a `.zip` containing one
-#                              (e.g. the ULTRA64 2GIG 5.3 image). Used by the o32 job.
+#                              dev option — a bare `.chd` or a `.zip` containing one.
+#                              Supply your own; used by the o32 job.
 #   var    IRIX_TOOLCHAIN_IMAGE  container with a mips-sgi-irix gcc + IRIX sysroot
 #                              (sys/dsreq.h, invent.h, libc). Used by the n32 job.
 #                              Or pass the `irix_toolchain_image` dispatch input.
