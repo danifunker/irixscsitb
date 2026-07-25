@@ -45,7 +45,7 @@ Upstream useful changes here are candidates to PR back to SonnyJim/bstoolbox.
 | `irix.c` | IRIX backend: `<sys/dsreq.h>` `DS_ENTER` ioctls, `mediad` start/stop. |
 | `linux.c` | Linux backend: `<scsi/sg.h>` `SG_IO` ioctls. |
 | `Makefile` | `uname`-based OS detection; sets `-DOS_IRIX` / `-DOS_LINUX`. |
-| `meson.build` | Linux/CI build only. |
+| `meson.build` | Linux build. **Currently out of date** — missing `version.c` and the generated headers, so it does not link; see `.github/workflows/build.yaml`. |
 | `scripts/mkversion.sh` | Stamps `version.h` from git. Runs on the *host*, never on IRIX. |
 | `scripts/sync-irix-drop.sh` | Assembles the IRIX/IRIS drop folder. The only supported way. |
 | `scripts/irix-native-build.sh` | Shipped into the drop as `build.sh`; builds natively inside IRIX. |
