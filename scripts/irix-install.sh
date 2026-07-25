@@ -2,7 +2,8 @@
 # irix-install.sh - install the SCSI Toolbox on this IRIX machine.
 #
 # Shipped into the output/ folder (and any release tarball) as install.sh. Run
-# it as root from the directory holding the built binaries.
+# it as root - logged in as root, not necessarily via su(1), which a stock
+# IRIX 5.3 may not have - from the directory holding the built binaries.
 #
 #   ./install.sh                     binaries into /usr/sbin, plus desktop icons
 #   BINDIR=/usr/bin/X11 ./install.sh install somewhere else
@@ -47,7 +48,7 @@ echo "=== SCSI Toolbox install ==="
 # Checked BEFORE the root test on purpose. This needs no privileges, and the
 # overwhelmingly common mistake is running the installer before the build (or
 # from the source folder rather than output/). Testing root first answers a
-# question nobody asked and sends you off to su for no reason.
+# question nobody asked and sends you off to become root for no reason.
 HAVE=""
 for b in irixscsitb scsitbgui; do
 	if [ -f "$SRCDIR/$b" ]; then
@@ -69,13 +70,29 @@ fi
 echo "found:$HAVE"
 
 # --- must be root ---------------------------------------------------------
+# IRIX 5.3's id(1) has NO -u flag. It fails, UID_NOW comes back empty, and a
+# naive [ "$UID_NOW" != "0" ] then reports "not root" precisely when you ARE
+# root - which is what this used to do. So: try -u for modern systems, and fall
+# back to parsing the SVR4 "uid=0(root) gid=0(sys)" form that IRIX prints.
 UID_NOW=`id -u 2>/dev/null`
-if [ "$UID_NOW" != "0" ]; then
-	echo ""
-	echo "ERROR: run this as root - it writes to $BINDIR and $FTDIR."
-	echo "       su, then ./install.sh"
-	exit 1
+if [ -z "$UID_NOW" ]; then
+	UID_NOW=`id 2>/dev/null | sed 's/^uid=\([0-9][0-9]*\).*/\1/'`
 fi
+
+# Block only when we have positively established a non-root uid. If neither
+# form parsed we do not know, and refusing on a guess would be the same bug
+# again - let the copies below fail with a real permission error instead.
+case "$UID_NOW" in
+	0)      ;;
+	"")     echo "NOTE: could not determine your uid; continuing anyway." ;;
+	*[!0-9]*)
+		echo "NOTE: could not read a uid out of id(1); continuing anyway." ;;
+	*)      echo ""
+		echo "ERROR: run this as root - it writes to $BINDIR and $FTDIR."
+		echo "       Log in as root and run it again. (Do not assume su(1)"
+		echo "       is available; a stock IRIX 5.3 may not have it.)"
+		exit 1 ;;
+esac
 
 # --- 1. binaries ----------------------------------------------------------
 mkdir -p "$BINDIR" 2>/dev/null
