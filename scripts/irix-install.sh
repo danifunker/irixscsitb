@@ -4,9 +4,10 @@
 # Shipped into the output/ folder (and any release tarball) as install.sh. Run
 # it as root from the directory holding the built binaries.
 #
-#   ./install.sh                 binaries into /usr/local/bin, plus desktop icons
-#   PREFIX=/usr ./install.sh     binaries into /usr/bin instead
-#   NOICONS=1 ./install.sh       binaries only, skip the desktop icon rules
+#   ./install.sh                     binaries into /usr/sbin, plus desktop icons
+#   BINDIR=/usr/bin/X11 ./install.sh install somewhere else
+#   PREFIX=/usr/local ./install.sh   prefix style: <prefix>/bin
+#   NOICONS=1 ./install.sh           binaries only, skip the desktop icon rules
 #
 # Two independent things get installed, and it is worth knowing which is which
 # when one of them does not show up:
@@ -20,8 +21,20 @@
 # Written for the IRIX 5.3 /bin/sh (Bourne shell): backticks, no $( ), no
 # 'local', no arithmetic, no 'command -v'.
 
-PREFIX=${PREFIX:-/usr/local}
-BINDIR="$PREFIX/bin"
+# /usr/sbin, not /usr/local/bin. Both tools need root to open the generic SCSI
+# nodes, /usr/sbin is where IRIX keeps administrative binaries, and - the part
+# that actually matters - it is on root's default PATH, which /usr/local/bin is
+# not (and on a stock install may not even exist). BINDIR overrides outright;
+# PREFIX is honoured for anyone who prefers prefix-style layouts.
+#
+# The other defensible home is /usr/bin/X11, where IRIX keeps X clients: that
+# would suit scsitbgui but not the CLI, so both go to one place by default and
+# BINDIR is there for anyone who wants to split them.
+if [ -n "$PREFIX" ]; then
+	BINDIR=${BINDIR:-$PREFIX/bin}
+else
+	BINDIR=${BINDIR:-/usr/sbin}
+fi
 FTDIR=/usr/lib/filetype/local
 SRCDIR=`dirname "$0"`
 
@@ -53,7 +66,7 @@ if [ $FOUND -eq 0 ]; then
 fi
 
 case "$BINDIR" in
-	/usr/bin|/bin|/usr/sbin) ;;
+	/usr/bin|/bin|/usr/sbin|/sbin|/usr/bsd|/usr/bin/X11) ;;
 	*) echo ""
 	   echo "NOTE: $BINDIR may not be on your PATH by default on IRIX."
 	   echo "      Either add it, or run the tools by full path." ;;

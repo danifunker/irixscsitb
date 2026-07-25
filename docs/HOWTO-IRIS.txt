@@ -97,9 +97,16 @@ then ./irixscsitb ...  (the examples below).
 To put the tools on the system properly, as root:
 
    cd output
-   ./install.sh                 # binaries -> /usr/local/bin, plus desktop icons
-   PREFIX=/usr ./install.sh     # -> /usr/bin instead
-   NOICONS=1 ./install.sh       # binaries only, skip the desktop icon rules
+   ./install.sh                     # binaries -> /usr/sbin, plus desktop icons
+   BINDIR=/usr/bin/X11 ./install.sh # somewhere else
+   PREFIX=/usr/local ./install.sh   # prefix style: <prefix>/bin
+   NOICONS=1 ./install.sh           # binaries only, skip the desktop icon rules
+
+/usr/sbin is the default deliberately. Both tools need root to open the generic
+SCSI nodes, /usr/sbin is where IRIX keeps administrative binaries, and it is on
+root's default PATH - which /usr/local/bin is not, and on a stock install may
+not even exist. /usr/bin/X11 (where IRIX keeps X clients) is the other
+defensible home and suits scsitbgui, hence the BINDIR override.
 
 It installs two independent things:
 
