@@ -537,14 +537,26 @@ Host-side (rb-cli is a host tool). Takes whatever `build.sh` packaged and wraps
 it in an IRIX EFS CD image, optionally an SGI `.hda` too. Distinct from
 `scripts/package.sh`, which builds release artifacts around a bare binary.
 
-It puts **both** the extracted tree and the `.tar` itself on the disc, and the
-reason matters: **EFS stores everything mode 0644.** An execute bit does not
-survive being written into the filesystem — not via `put`, not via `untar`
-(verified with `rb-cli ls -o`). So the extracted tree is browsable but nothing
-in it is runnable in place. The `.tar` beside it *is* mode-preserving, because
-tar carries modes in its own headers — verified by pulling it back off the image
-and checking the bits came out `0755`. Hence the IRIX recipe is
-`tar xvf /CDROM/<pkg>.tar` rather than running anything off the mount.
+The disc carries **just the tarball** — one file, extracted on IRIX with a bare
+`tar xvf`, modes restored by tar itself, no `chmod` step.
+
+**EFS holds execute bits perfectly well** — an earlier note here claiming
+otherwise was wrong. `rb-cli put` of an 0755 host file lands 0755 in the image.
+What is broken is **`rb-cli untar`**, which discards the mode from the tar header
+and writes 0644. Minimal repro on the same image:
+
+```sh
+chmod 755 x.sh
+rb-cli optical new sgi-efs t.iso --size 4M --name MODET
+rb-cli put   t.iso@1 x.sh /x.sh      # -> ls -o shows -rwxr-xr-x   correct
+tar cf x.tar x.sh                    # tar tvf confirms -rwxr-xr-x
+rb-cli untar t.iso@1 x.tar /         # -> ls -o shows -rw-r--r--   WRONG
+```
+
+`put` reports `mode 0755 (from host file)`; `untar` reports nothing and stores
+0644. So the fault is in rb-cli's tar importer, **not** in the EFS/optical layer
+— `put` proves that layer round-trips modes correctly. Worth fixing upstream in
+rusty-backup; until then, ship the tar rather than an imported tree.
 
 ## Syncing to the IRIX/IRIS drop folder
 

@@ -9,17 +9,19 @@
 #   scripts/make-efs-iso.sh --tar T.tar --out mydisc.iso --size 8M --name SCSITB
 #   scripts/make-efs-iso.sh --tar T.tar --hdd          # also build a .hda
 #
-# WHAT LANDS ON THE DISC, and why it is both:
+# WHAT LANDS ON THE DISC: just the tarball.
 #
-#   /irixscsitb-<rev>.tar   the archive itself
-#   /irixscsitb-<rev>/...   the same files, extracted
+#   /irixscsitb-<rev>.tar
 #
-# EFS stores everything mode 0644 - an execute bit does not survive being
-# written into the filesystem, whether by `put` or by `untar`. So the extracted
-# tree is browsable but its scripts and binaries are not runnable in place. The
-# .tar sitting next to it IS mode-preserving, because tar carries the modes in
-# its own headers: extract it on IRIX and everything comes out executable with
-# no chmod. Hence both - the tree to look at, the tarball to actually use.
+# One file, extracted on IRIX with a bare `tar xvf`. That is deliberate, not a
+# workaround: tar carries modes in its own headers, so everything comes out
+# executable with no chmod, and there is exactly one thing to copy.
+#
+# It is NOT because EFS cannot hold an execute bit - it can. `rb-cli put` of an
+# 0755 host file lands 0755 in the image, verified. What does not work today is
+# `rb-cli untar`, which drops the mode from the tar header and writes 0644; that
+# is why importing the extracted tree here would give a browsable but unrunnable
+# copy. See docs in CLAUDE.md for the repro.
 #
 # Differs from scripts/package.sh, which builds release artifacts around a bare
 # binary. This one just takes whatever build.sh packaged and wraps it in EFS.
@@ -77,7 +79,6 @@ build_one() {
 	img="$1"
 	echo ""
 	echo ">>> populating $2: $img"
-	"$RB" untar "$img@1" "$TARFILE" /
 	"$RB" put "$img@1" "$TARFILE" "/$TARBASE"
 	"$RB" fsck "$img@1"
 	echo "--- contents:"
@@ -110,8 +111,8 @@ cat <<EOF
 In IRIS, attach the .iso as a CD:      [scsi.N] path = "...", cdrom = true
               or the .hda as a disk:   [scsi.N] path = "...", cdrom = false
 
-On IRIX, mount and unpack (EFS cannot store the execute bits, so use the
-tarball rather than running things out of the extracted tree):
+On IRIX, mount and unpack. tar restores the execute bits, so there is no chmod
+step:
 
     mkdir -p /CDROM
     mount -t efs -o ro /dev/dsk/dks0d<N>s7 /CDROM
@@ -119,8 +120,5 @@ tarball rather than running things out of the extracted tree):
     tar xvf /CDROM/$TARBASE
     cd $PKGDIR
     ./install.sh
-
-The extracted copy on the disc is there for reading - the README, or checking
-what is in the build - not for running in place.
 ============================================================
 EOF
