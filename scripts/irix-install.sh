@@ -43,30 +43,47 @@ SRCDIR=`dirname "$0"`
 
 echo "=== SCSI Toolbox install ==="
 
+# --- is there anything to install? ----------------------------------------
+# Checked BEFORE the root test on purpose. This needs no privileges, and the
+# overwhelmingly common mistake is running the installer before the build (or
+# from the source folder rather than output/). Testing root first answers a
+# question nobody asked and sends you off to su for no reason.
+HAVE=""
+for b in irixscsitb scsitbgui; do
+	if [ -f "$SRCDIR/$b" ]; then
+		HAVE="$HAVE $b"
+	fi
+done
+if [ -z "$HAVE" ]; then
+	echo "ERROR: no irixscsitb or scsitbgui in $SRCDIR - nothing to install yet."
+	echo ""
+	echo "  If you have not built yet:"
+	echo "      ./build.sh"
+	echo "      cd output && ./install.sh"
+	echo ""
+	echo "  If you have built, run the installer from the output/ folder"
+	echo "  (or an unpacked release tarball) - it installs the binaries that"
+	echo "  sit next to it, and there are none here."
+	exit 1
+fi
+echo "found:$HAVE"
+
 # --- must be root ---------------------------------------------------------
 UID_NOW=`id -u 2>/dev/null`
 if [ "$UID_NOW" != "0" ]; then
+	echo ""
 	echo "ERROR: run this as root - it writes to $BINDIR and $FTDIR."
 	echo "       su, then ./install.sh"
 	exit 1
 fi
 
 # --- 1. binaries ----------------------------------------------------------
-FOUND=0
 mkdir -p "$BINDIR" 2>/dev/null
-for b in irixscsitb scsitbgui; do
-	if [ -f "$SRCDIR/$b" ]; then
-		cp "$SRCDIR/$b" "$BINDIR/$b" || exit 1
-		chmod 755 "$BINDIR/$b"
-		echo "installed $BINDIR/$b"
-		FOUND=1
-	fi
+for b in $HAVE; do
+	cp "$SRCDIR/$b" "$BINDIR/$b" || exit 1
+	chmod 755 "$BINDIR/$b"
+	echo "installed $BINDIR/$b"
 done
-if [ $FOUND -eq 0 ]; then
-	echo "ERROR: no irixscsitb or scsitbgui next to this script."
-	echo "       Run it from the output/ folder that build.sh produced."
-	exit 1
-fi
 
 case "$BINDIR" in
 	/usr/bin|/bin|/usr/sbin|/sbin|/usr/bsd|/usr/bin/X11) ;;
