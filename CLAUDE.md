@@ -355,6 +355,38 @@ Do not commit either header; both are `.gitignore`d. `make clean` deletes
 `buildhost.h` but **not** `version.h` — the latter is an input on IRIX and
 deleting it there would be unrecoverable.
 
+## Installing on a target IRIX machine
+
+`scripts/irix-install.sh` ships as `output/install.sh` and does three things,
+each of which can fail independently:
+
+| Piece | Where | Visible after |
+|---|---|---|
+| binaries | `$BINDIR`, default **`/usr/sbin`** | immediately |
+| Toolchest entry | `/usr/lib/X11/app-chests/scsitoolbox.chest` | WM restart (`tellwm restart`) |
+| desktop icon | `/usr/lib/filetype/local/` + rebuilt type DB | desktop restart / reboot |
+
+**`/usr/sbin`, not `/usr/local/bin`** — both tools need root for the generic
+SCSI nodes, it is where IRIX keeps administrative binaries, and it is on root's
+default PATH, which `/usr/local/bin` is not and may not even exist. `BINDIR`
+overrides; `/usr/bin/X11` is the other idiomatic home (where IRIX keeps X
+clients).
+
+**The Toolchest entry never edits a system file.** `system.chestrc` ends with
+`sinclude /usr/lib/X11/app-chests`, so that directory is a drop-in: a `*.chest`
+fragment there is pulled in wholesale. `Menu ToolChest` is additive —
+system.chestrc reopens it after the include to append Help — which is what lets
+a fragment add a top-level item. The fragment is *generated* by the installer
+rather than shipped static, because the path has to match wherever `BINDIR` put
+the binary. `f.checkexec.sh` means the entry hides itself if the binary is gone.
+
+The FTR Makefile patch inserts before the `${NULL}` terminator of `FTR_FILES`
+using `awk index()` (no `${...}` escaping), keeps a backup, and is idempotent.
+Both it and the whole `build.sh` flow are tested off-target — the awk against
+the real 5.3 Makefile, the build against a stub `make`, and the installer
+against a fake tree via the `FTDIR`/`CHESTDIR`/`BINDIR` overrides that exist
+for exactly that purpose.
+
 ## Syncing to the IRIX/IRIS drop folder
 
 ```sh

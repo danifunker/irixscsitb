@@ -108,18 +108,28 @@ root's default PATH - which /usr/local/bin is not, and on a stock install may
 not even exist. /usr/bin/X11 (where IRIX keeps X clients) is the other
 defensible home and suits scsitbgui, hence the BINDIR override.
 
-It installs two independent things:
+It installs three independent things:
 
    1. The binaries. Usable immediately.
-   2. The desktop File Typing Rules, which are what give the executables an
+   2. A Toolchest (start menu) entry for the GUI. It drops a *.chest fragment
+      into /usr/lib/X11/app-chests/, which system.chestrc pulls in wholesale
+      via "sinclude" - so no system config file is edited. Appears as soon as
+      the window manager restarts.
+   3. The desktop File Typing Rules, which are what give the executables an
       icon in the Icon Catalog and file manager. It copies them into
       /usr/lib/filetype/local/, adds the rule to that directory's Makefile
       (keeping a backup) and rebuilds the type database.
 
-The desktop only reads its type database at startup, so the ICON does not
-appear until it restarts. The script says so at the end:
+The two restart requirements differ, which is worth knowing when only one of
+them shows up:
 
-      PLEASE REBOOT (or log out and back in) to see the icon.
+   Toolchest entry - restart the window manager:
+                       /usr/bin/X11/tellwm restart
+                     or Toolchest > System > Restart Window Manager
+   Desktop icon    - needs the DESKTOP restarted; it reads its type database
+                     only at startup
+
+A reboot covers both, which is what the script asks for at the end.
 
 You do NOT have to install anything to test - the binaries run fine from
 $HOME/irixscsitb-build or from output/.
@@ -238,9 +248,19 @@ Things worth reporting back:
     if this system has them - but which one you get is useful to know.
 
 
-6. Icons - three different things
----------------------------------
-Worth separating, because they come from different places:
+6. Where the app shows up - four different mechanisms
+-----------------------------------------------------
+Worth separating, because they come from different places and fail
+independently:
+
+d) The Toolchest (start menu). install.sh drops a fragment into
+   /usr/lib/X11/app-chests/; system.chestrc includes that whole directory, so
+   nothing system-owned is edited. The entry uses f.checkexec.sh, the same verb
+   SGI's own entries use, which only shows the item when the program is
+   actually present - so removing the binary makes the entry vanish on its own.
+   Needs the window manager restarted, not a full reboot.
+
+And the three icon paths:
 
 a) The window-manager icon. The program sets this on itself; it is the SCSI
    mark. You only see it when the window is ICONIFIED - it is not an icon for

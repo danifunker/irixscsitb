@@ -9,14 +9,15 @@
 #   PREFIX=/usr/local ./install.sh   prefix style: <prefix>/bin
 #   NOICONS=1 ./install.sh           binaries only, skip the desktop icon rules
 #
-# Two independent things get installed, and it is worth knowing which is which
-# when one of them does not show up:
+# Three independent things get installed, and it is worth knowing which is
+# which when one of them does not show up:
 #
 #   1. The binaries. Immediate, nothing else needed.
-#   2. The desktop File Typing Rules, which are what give the executables an
+#   2. A Toolchest entry, so the GUI is on the start menu. Appears as soon as
+#      the window manager restarts.
+#   3. The desktop File Typing Rules, which are what give the executables an
 #      icon in the Icon Catalog and file manager. The desktop reads its type
-#      database at startup, so those do NOT appear until it restarts - hence
-#      the prompt at the end.
+#      database only at startup, so this one needs a reboot.
 #
 # Written for the IRIX 5.3 /bin/sh (Bourne shell): backticks, no $( ), no
 # 'local', no arithmetic, no 'command -v'.
@@ -35,7 +36,9 @@ if [ -n "$PREFIX" ]; then
 else
 	BINDIR=${BINDIR:-/usr/sbin}
 fi
-FTDIR=/usr/lib/filetype/local
+# Overridable so the script can be exercised against a fake tree off-target.
+FTDIR=${FTDIR:-/usr/lib/filetype/local}
+CHESTDIR=${CHESTDIR:-/usr/lib/X11/app-chests}
 SRCDIR=`dirname "$0"`
 
 echo "=== SCSI Toolbox install ==="
@@ -78,7 +81,50 @@ if [ -n "$NOICONS" ]; then
 	exit 0
 fi
 
-# --- 2. desktop icon rules ------------------------------------------------
+# --- 2. Toolchest (start menu) entry --------------------------------------
+# /usr/lib/X11/app-chests is a drop-in directory: system.chestrc ends with
+# "sinclude /usr/lib/X11/app-chests", so every *.chest file in it is pulled in.
+# That means we never have to edit a system config file - a wrong fragment can
+# at worst fail to add a menu item, it cannot break the existing menus.
+#
+# "Menu ToolChest" is additive: system.chestrc itself reopens it AFTER the
+# sinclude in order to append Help, which is what lets a fragment contribute a
+# top-level entry.
+#
+# f.checkexec.sh is the same verb SGI's own entries use; the "check" part means
+# the item only appears when the program is actually present, so uninstalling
+# the binary makes the menu entry disappear by itself.
+if [ -d "$CHESTDIR" ]; then
+	echo ""
+	echo ">>> adding a Toolchest entry in $CHESTDIR"
+	# Generated rather than shipped as a static file: the path has to match
+	# wherever BINDIR actually put the binary.
+	cat > "$CHESTDIR/scsitoolbox.chest" <<CHEST
+################################################################################
+# scsitoolbox.chest - installed by the SCSI Toolbox installer.
+#
+# Pulled in by the "sinclude /usr/lib/X11/app-chests" at the end of
+# /usr/lib/X11/system.chestrc. Safe to delete - the menu entry goes with it.
+################################################################################
+
+Menu ToolChest
+{
+     no-label		f.separator
+    "SCSI Toolbox"	f.checkexec.sh "$BINDIR/scsitbgui"
+}
+CHEST
+	if [ -f "$CHESTDIR/scsitoolbox.chest" ]; then
+		echo "installed $CHESTDIR/scsitoolbox.chest"
+	else
+		echo "WARNING: could not write $CHESTDIR/scsitoolbox.chest"
+	fi
+else
+	echo ""
+	echo "NOTE: $CHESTDIR is not present, so this system has no Toolchest to"
+	echo "      add to. Skipping the start-menu entry."
+fi
+
+# --- 3. desktop icon rules ------------------------------------------------
 if [ ! -d "$FTDIR" ]; then
 	echo ""
 	echo "NOTE: $FTDIR does not exist, so the Indigo Magic desktop does not"
@@ -143,8 +189,13 @@ echo "Binaries are installed and usable NOW:"
 echo "    $BINDIR/irixscsitb -b"
 echo "    $BINDIR/scsitbgui"
 echo ""
-echo "The desktop ICON will not appear until the desktop reloads its"
-echo "type database, which it only does at startup."
+echo "The other two pieces need something restarted, and they differ:"
 echo ""
-echo "    PLEASE REBOOT (or log out and back in) to see the icon."
+echo "  Toolchest entry  - restart the window manager. Either"
+echo "                       /usr/bin/X11/tellwm restart"
+echo "                     or Toolchest > System > Restart Window Manager."
+echo "  Desktop icon     - needs the DESKTOP restarted, which reads its type"
+echo "                     database only at startup."
+echo ""
+echo "    PLEASE REBOOT (or log out and back in) - that covers both."
 echo "============================================================"
