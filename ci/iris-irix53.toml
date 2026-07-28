@@ -1,48 +1,56 @@
-# ci/iris-irix53.toml — IRIS machine config for the headless CI build of irixscsitb.
+# ci/iris-irix53.toml — IRIS machine config for the headless CI build of the
+# o32 (IRIX 5.3, runs 5.3-6.5) binaries.
 #
-# Boots an ALREADY-INSTALLED IRIX 5.3 system disk and exports a host directory
-# over IRIS's built-in NFS server so scripts/iris-build.sh can drop the source in
-# and read the compiled o32 binary back out — no scratch volume, no push/pull.
-# (scripts/iris-build.sh passes --nfs-dir on the command line, which overrides
-# the shared_dir below; this stanza is what makes a *manual* `iris --config
-# ci/iris-irix53.toml` run export something too.)
+# Boots an ALREADY-INSTALLED IRIX 5.3 system disk. scripts/iris-build.sh
+# overrides the disk paths on the command line (--scsi1 boot disk, --scsi2
+# work disk), boots SINGLE-USER over the serial console, builds with the
+# native MIPSpro cc, and pulls the binaries back off the work disk with
+# rb-cli. No networking is required inside the guest for that flow.
 #
-# NETWORKING PREREQUISITE: NFS needs an IP inside the guest. The IRIS NAT hands
-# out 192.168.0.2 via DHCP and answers NFS at the gateway 192.168.0.1 — but the
-# guest must be configured to ask. Run scripts/irix-enable-dhcp.sh against the
-# boot disk ONCE before first use.
+# BASE DISK: any installed IRIX 5.3 with the IDO dev option (cc, make,
+# headers), plus the Motif dev environment if you want the GUI built too.
+# Root's password must be empty (or export IRIX_ROOT_PASSWORD for the build
+# script). Supply your own image — none is referenced by name here.
 #
-# BASE DISK: any installed IRIX 5.3 system that has the developer option (IDO:
-# cc, make, headers) so `make` works inside the guest, plus the Motif
-# development environment if you want the GUI built too. Supply your own - no
-# particular image is required or shipped here, and none is referenced by name.
-# Point scsi.1.path at your .chd, or drop it next to wherever iris runs as
-# `irix53.chd`. Paths here are relative to iris's working dir - use absolute
-# paths if you run iris from elsewhere.
+# THE BOOT DISK IS NEVER WRITTEN: overlay = true sends every guest write to
+# `<image>.chd.diff.chd` next to the image. Delete that file (or run
+# iris-build.sh --fresh) to reset the guest to its pristine state. Without
+# the flag, iris folds the diff back into a compressed base CHD on clean
+# exit — exactly what a keep-the-image-fresh CI must avoid.
 
-headless   = true                   # no window; --ci also renders offscreen
+headless   = true                   # no window; --ci renders nothing anyway
 no_audio   = true
 banks      = [128, 128, 0, 0]
-nvram      = "nvram-irix53-ci.bin"  # iris seeds a default on first run
-serial_log = "iris-ci-console.log"
+nvram      = "nvram-irix53-ci.bin"  # seeded fresh per workdir; PROM defaults
+serial_log = "iris-ci-console.log"  # iris-build.sh overrides with --serial-log
 
-# The installed IRIX 5.3 boot disk (supply your own; see above).
+# The installed IRIX 5.3 boot disk (iris-build.sh passes --scsi1; this
+# default only matters for manual `iris --config` runs).
 [scsi.1]
-path  = "irix53.chd"
+path    = "irix53.chd"
+cdrom   = false
+overlay = true
+
+# The work disk — an SGI EFS image made by `rb-cli new hd sgi-efs --from-dir`
+# carrying the sources in and the binaries out (guest: /dev/dsk/dks0d2s0).
+# iris-build.sh passes --scsi2 with the per-run image; no overlay, it IS the
+# transfer medium and is recreated fresh on the host every run.
+[scsi.2]
+path  = "work.hda"
 cdrom = false
 
-# NFS export: host<->guest file transfer with nothing to install (in-core,
-# pure-Rust NFS server; NFSv2 for 5.3, NFSv3 for 6.x, auto-negotiated). Mount it
-# inside IRIX with:  mount 192.168.0.1:/ /mnt
-[nfs]
-shared_dir = "./ci-share"
-
-# Old scratch-volume path (no longer used by iris-build.sh; kept commented as a
-# no-networking fallback — guest sees it at /dev/rdsk/dks0d2s0). Uncomment to
-# transfer files via `iris-ci push/pull` instead of NFS.
-#[scsi.2]
-#path    = "iris-ci-scratch.raw"
-#cdrom   = false
-#overlay = false
-#scratch = true
-#size_mb = 64
+# Optional alternative transfer channels, for manual use:
+#
+# - EFS CD-ROM with the sources (read-only in; make one with
+#   `rb-cli optical new sgi-efs src.iso --from-dir <dir>`; mount inside IRIX
+#   with `mount -t efs -o ro /dev/dsk/dks0d4s7 /mnt`):
+#[scsi.4]
+#path  = "src.iso"
+#cdrom = true
+#
+# - IRIS's built-in NFS server (needs the guest networked: a valid NVRAM
+#   eaddr — `setenv -f eaddr 08:00:69:de:ad:01` in the PROM monitor once —
+#   plus either DHCP via scripts/irix-enable-dhcp.sh or a static IP matching
+#   the NAT subnet; mount inside IRIX with `mount 192.168.0.1:/ /mnt`):
+#[nfs]
+#shared_dir = "./ci-share"

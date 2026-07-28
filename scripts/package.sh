@@ -27,6 +27,7 @@
 #
 # Options (defaults in brackets):
 #   --bin PATH        primary IRIX binary -> images (as /irixscsitb) + tarball (required)
+#   --gui-bin PATH    Motif GUI binary -> images (as /scsitbgui) + tarball (optional)
 #   --version VER     version string used in output filenames (required)
 #   --outdir DIR      where to write the artifacts       [dist]
 #   --rb-cli PATH     rb-cli binary    [$RB_CLI, then `rb-cli` on PATH]
@@ -43,6 +44,7 @@
 set -eu
 
 BIN=""
+GUI_BIN=""
 VERSION=""
 OUTDIR="dist"
 RB="${RB_CLI:-rb-cli}"
@@ -62,6 +64,7 @@ die() { echo "package: $*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--bin)      BIN="$2"; shift 2 ;;
+		--gui-bin)  GUI_BIN="$2"; shift 2 ;;
 		--version)  VERSION="$2"; shift 2 ;;
 		--outdir)   OUTDIR="$2"; shift 2 ;;
 		--rb-cli)   RB="$2"; shift 2 ;;
@@ -83,6 +86,7 @@ done
 [ -n "$BIN" ] || die "missing --bin"
 [ -n "$VERSION" ] || die "missing --version"
 [ -f "$BIN" ] || die "binary not found: $BIN"
+[ -z "$GUI_BIN" ] || [ -f "$GUI_BIN" ] || die "gui binary not found: $GUI_BIN"
 command -v "$RB" >/dev/null 2>&1 || [ -x "$RB" ] || die "rb-cli not found: $RB"
 
 # Fail early (and clearly) if this rb-cli predates the current builder grammar.
@@ -101,23 +105,29 @@ ISO_IMG="$OUTDIR/irixscsitb-$VERSION.iso"
 HDD_IMG="$OUTDIR/irixscsitb-$VERSION.hda"
 TARBALL="$OUTDIR/irixscsitb-$VERSION.tar.gz"
 
-# put_payload <image-ref> : drop the primary binary (as /irixscsitb) + any extras
-# at the volume root. <image-ref> addresses the EFS partition as "@1" for both
-# the CD (slot 7) and the HDD (slot 0) — rb-cli maps @1 to the sole EFS partition.
+# put_payload <image-ref> : drop the binaries (as /irixscsitb [+ /scsitbgui])
+# + any extras at the volume root. <image-ref> addresses the EFS partition as
+# "@1" for both the CD (slot 7) and the HDD (slot 0) — rb-cli maps @1 to the
+# sole EFS partition.
 put_payload() {
 	ref="$1"
 	"$RB" put "$ref" "$BIN" /irixscsitb
+	[ -z "$GUI_BIN" ] || "$RB" put "$ref" "$GUI_BIN" /scsitbgui
 	for f in $EXTRAS; do
 		"$RB" put "$ref" "$f" "/$(basename "$f")"
 	done
 }
 
-# Round-trip: the /irixscsitb we read back must match the source binary.
+# Round-trip: each binary we read back must match its source.
 verify_roundtrip() {
 	ref="$1"; label="$2"
 	tmpd="$(mktemp -d)"
 	"$RB" get "$ref" /irixscsitb "$tmpd/out"
 	cmp "$BIN" "$tmpd/out" || { rm -rf "$tmpd"; die "$label round-trip MISMATCH"; }
+	if [ -n "$GUI_BIN" ]; then
+		"$RB" get "$ref" /scsitbgui "$tmpd/gui"
+		cmp "$GUI_BIN" "$tmpd/gui" || { rm -rf "$tmpd"; die "$label GUI round-trip MISMATCH"; }
+	fi
 	rm -rf "$tmpd"
 	echo "    $label round-trip OK"
 }
@@ -150,6 +160,10 @@ if [ "$DO_TAR" = 1 ]; then
 	# after copying off the media).
 	cp "$BIN" "$stage/$top/"
 	chmod +x "$stage/$top/$(basename "$BIN")"
+	if [ -n "$GUI_BIN" ]; then
+		cp "$GUI_BIN" "$stage/$top/"
+		chmod +x "$stage/$top/$(basename "$GUI_BIN")"
+	fi
 	for f in $TAR_BINS; do
 		[ -f "$f" ] || die "tar-bin not found: $f"
 		cp "$f" "$stage/$top/"

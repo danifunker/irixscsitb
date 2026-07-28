@@ -98,6 +98,74 @@ Use the **`o32`** binary for anything from IRIX 5.3 through 6.5; the **`n32`**
 binary is a faster 6.x-only build. The `.iso`/`.hda` store the binary mode 0644,
 so `chmod +x irixscsitb` after copying it off; the `.tar.gz` is already executable.
 
+## CI: built natively on IRIX, inside the IRIS emulator
+
+The release artifacts are compiled by **real IRIX**. The pipeline boots
+installed IRIX 5.3 and 6.5 system disks headless in the
+[IRIS emulator](https://github.com/danifunker/iris) and drives each guest's
+own MIPSpro `cc` over the emulated serial console. This repo doubles as a
+**sample project** for building any IRIX software this way — the deep-dive is
+[`docs/ci-iris.md`](docs/ci-iris.md); the short version:
+
+- **Native, twice.** The o32 binaries come from an IRIX 5.3 guest (a GNU
+  cross-toolchain cannot *link* for 5.3, and no cross sysroot has Motif
+  headers for the GUI); the faster n32 binaries come from an IRIX 6.5 guest.
+- **No networking in the guest.** Sources ride in — and binaries ride out —
+  on an EFS "work disk" built per run by
+  [rb-cli](https://github.com/danifunker/rusty-backup) and attached as a
+  second SCSI drive. No DHCP, no NVRAM MAC, no NFS setup in your image.
+- **Your boot disk is never modified.** Copy-on-write: every guest write goes
+  to a `<image>.chd.diff.chd` sidecar; delete it (or pass `--fresh`) to reset.
+- **One code path.** The GitHub Actions workflow, a self-hosted runner, and a
+  plain local run all execute the *same* scripts (`scripts/fetch-iris.sh`,
+  `ensure-rbcli.sh`, `fetch-image.sh`, `iris-build.sh`, `package-dist.sh`,
+  `publish-release.sh`) — the YAML step bodies are one-liners.
+
+### Setup (once): `ci/local.conf`
+
+All per-machine configuration lives in one gitignore'd file:
+
+```sh
+scripts/fetch-iris.sh --dir ../iris                     # prebuilt emulator pair
+cp ci/local.conf.example ci/local.conf && $EDITOR ci/local.conf
+```
+
+Every key is optional except the image(s) you build from, and every key can
+also arrive as an environment variable or a command-line flag (flag > env >
+conf):
+
+| `ci/local.conf` key | What it sets |
+|---|---|
+| `IRIX53_IMAGE` / `IRIX65_IMAGE` | paths to your installed dev boot disks (`.chd`) |
+| `IRIX53_DISK_URL` / `IRIX65_DISK_URL` | private download URLs instead of local paths |
+| `BUILD_O32=0` / `BUILD_N32=0` | disable a flavor (only have one image? turn the other off) |
+| `IRIS_DIR` | where the emulator lives [`../iris`] |
+| `IRIS_RELEASE_REPO` / `IRIS_TAG` | which iris releases to fetch, optional version pin [`danifunker/iris` @ `latest`] |
+| `RB_CLI` | rb-cli binary [PATH, else auto-downloaded] |
+
+### Everyday commands
+
+```sh
+scripts/iris-build.sh --flavor o32 --version 1.0   # o32 CLI+GUI + .iso/.hda/.tar.gz
+scripts/iris-build.sh --flavor n32                 # n32 CLI+GUI (binaries only)
+scripts/release-local.sh --dry-run                 # rehearse a full release
+scripts/release-local.sh                           # build both + publish via gh
+```
+
+### Three ways to cut a release
+
+| Mode | Where the images live | Needs |
+|---|---|---|
+| **Hosted Actions** (tag push or dispatch) | private URLs | `IRIX53_DISK_URL` + `IRIX65_DISK_URL` secrets |
+| **Self-hosted Actions** (dispatch with `runner_label` + `irix53_image`/`irix65_image`) | on your runner | a registered runner |
+| **`scripts/release-local.sh`** | on your machine | just `gh` (`--dry-run` to rehearse, `--draft` to stage) |
+
+All three publish the identical artifact set. A flavor can be skipped
+anywhere: `BUILD_O32`/`BUILD_N32` in `ci/local.conf`, the `build_o32`/
+`build_n32` dispatch inputs (or repo variables) in Actions, or
+`--skip-o32`/`--skip-n32` on `release-local.sh` — packaging adapts to
+whatever was built (an n32-only release loudly notes its media is 6.x-only).
+
 ## Usage
 
 Not sure which device is your BlueSCSI/ZuluSCSI? Run **`irixscsitb -b`** — it scans

@@ -1,50 +1,85 @@
 name: Release
 
-# Builds the IRIX irixscsitb binaries, packages them into .iso / .hda / .tar.gz
-# with rb-cli (rusty-backup), and publishes a GitHub release with everything
-# attached.
+# Builds the IRIX irixscsitb binaries NATIVELY — both flavors compile inside
+# the IRIS emulator on a real installed IRIX disk — then packages them into
+# .iso / .hda / .tar.gz with rb-cli (rusty-backup) and publishes a GitHub
+# release. docs/ci-iris.md is the full write-up; this file is meant to be
+# readable as a sample for other IRIX projects.
+#
+# THIN YAML BY DESIGN: every step body is a one-line call into scripts/, and
+# those same scripts are what scripts/release-local.sh runs on a developer
+# machine — one code path, whether the release is built here or locally.
+# The only things that live in YAML are the things only Actions can do:
+# job topology + matrix, runner selection, mapping secrets/inputs into the
+# environment, actions/cache + artifact transport, and runner apt packages.
+#
+#   scripts/fetch-iris.sh       prebuilt iris + iris-ci from the iris releases
+#   scripts/ensure-rbcli.sh     rb-cli from PATH or its releases
+#   scripts/fetch-image.sh      boot disk: local path / conf / URL download
+#   scripts/iris-build.sh       the native build inside the emulator
+#   scripts/package-dist.sh     package.sh args assembled from what was built
+#   scripts/publish-release.sh  gh release create with the canonical set
 #
 # Artifacts produced:
-#   irixscsitb-o32            IRIX o32/mips2 binary (5.3 - 6.5) — built NATIVELY in IRIS
-#   irixscsitb-n32            IRIX n32/mips3 binary (6.x, faster) — cross-compiled
-#   irixscsitb-*.iso          IRIX EFS CD-ROM   -> IRIS `cdrom = true` (mount -t efs ...s7)
-#   irixscsitb-*.hda          dvh + EFS HDD     -> IRIS `cdrom = false` SCSI disk
-#   irixscsitb-*.tar.gz       binaries + README -> drop into an NFS share and untar
+#   irixscsitb-o32 / scsitbgui-o32   o32/mips2 CLI + Motif GUI (IRIX 5.3-6.5),
+#                                    built in an IRIX 5.3 guest (single-user)
+#   irixscsitb-n32 / scsitbgui-n32   n32/mips3 CLI + GUI (IRIX 6.x, faster),
+#                                    built in an IRIX 6.5 guest (multiuser)
+#   irixscsitb-*.iso                 IRIX EFS CD-ROM   -> IRIS `cdrom = true`
+#   irixscsitb-*.hda                 dvh + EFS HDD     -> IRIS `cdrom = false`
+#   irixscsitb-*.tar.gz              all binaries + README, for an NFS share
 #
-# WHY TWO DIFFERENT BUILDERS:
-#   - o32 (the 5.3-capable build) is built NATIVELY inside the IRIS emulator with
-#     MIPSpro cc, because GNU binutils cannot link IRIX 5.3's o32 shared libs. The
-#     `build-o32-native` job builds iris from source, boots a real IRIX 5.3 disk,
-#     and compiles over IRIS's built-in NFS share (scripts/iris-build.sh).
-#   - n32 (6.x only) is cross-compiled from a mips-sgi-irix gcc + IRIX sysroot,
-#     which links fine for 6.x (`build-n32-cross`).
+# REQUIRED CONFIG (Settings > Secrets and variables > Actions) — hosted mode:
+#   secret IRIX53_DISK_URL   URL to an installed IRIX 5.3 boot disk with the
+#                            IDO dev option — a bare `.chd` or a `.zip` with
+#                            one. These are licensed IRIX installs: host them
+#                            PRIVATELY (private release asset, S3 + token, …).
+#   secret IRIX65_DISK_URL   same for an installed IRIX 6.5 disk with MIPSpro.
+# Optional:
+#   var IRIS_RELEASE_REPO    repo publishing prebuilt iris CLI releases
+#                            [danifunker/iris]
+#   var IRIS_TAG             iris release tag to pin [latest]
+#   var BUILD_O32/BUILD_N32  durably disable a flavor ('false'/'0'); the
+#                            build_o32/build_n32 dispatch inputs do it per-run.
+#                            Only have one image? Turn the other flavor off —
+#                            packaging adapts (an n32-only release notes that
+#                            its media binaries are 6.x-only).
 #
-# REQUIRED CONFIG (Settings > Secrets and variables > Actions):
-#   secret IRIX53_DISK_URL     URL to an installed IRIX 5.3 boot disk with the IDO
-#                              dev option — a bare `.chd` or a `.zip` containing one.
-#                              Supply your own; used by the o32 job.
-#   var    IRIX_TOOLCHAIN_IMAGE  container with a mips-sgi-irix gcc + IRIX sysroot
-#                              (sys/dsreq.h, invent.h, libc). Used by the n32 job.
-#                              Or pass the `irix_toolchain_image` dispatch input.
-#   var    IRIX_CC            cross-compiler name          [mips-sgi-irix6.5-gcc]
-#   var    IRIS_REPO / IRIS_REF   iris source to build     [chronic8000/iris @ main]
-#                              (IRIS_REF must be a branch or tag, not a bare SHA)
+# SELF-HOSTED MODE (images never leave your machine): dispatch the workflow
+# with `runner_label` set to your runner's label and `irix53_image` /
+# `irix65_image` set to absolute paths of the .chd files on that runner.
+# (Those inputs surface as $IRIX53_IMAGE/$IRIX65_IMAGE — the same variables
+# the scripts honor locally.) Linux and macOS runners both work.
 
 on:
   workflow_dispatch:
     inputs:
-      irix_toolchain_image:
-        description: "Container image with a mips-sgi-irix gcc + IRIX sysroot (overrides the IRIX_TOOLCHAIN_IMAGE variable)"
+      runner_label:
+        description: "Runner label to build on (blank = ubuntu-latest; e.g. self-hosted)"
         required: false
         default: ""
-      iris_repo:
-        description: "IRIS emulator source repo to build for the native o32 build (owner/name)"
+      irix53_image:
+        description: "Absolute path to the IRIX 5.3 boot .chd on the runner (blank = download from the IRIX53_DISK_URL secret)"
         required: false
         default: ""
-      iris_ref:
-        description: "IRIS branch or tag to build"
+      irix65_image:
+        description: "Absolute path to the IRIX 6.5 boot .chd on the runner (blank = download from the IRIX65_DISK_URL secret)"
         required: false
         default: ""
+      iris_tag:
+        description: "iris release tag to use (blank = IRIS_TAG var or latest)"
+        required: false
+        default: ""
+      build_o32:
+        description: "Build the o32 (IRIX 5.3) flavor"
+        type: boolean
+        required: false
+        default: true
+      build_n32:
+        description: "Build the n32 (IRIX 6.5) flavor"
+        type: boolean
+        required: false
+        default: true
   push:
     tags:
       - "v*"
@@ -52,7 +87,43 @@ on:
 permissions:
   contents: write
 
+# One env block, inherited by every job: the scripts read exactly these
+# variables whether exported here or in a developer's shell.
+env:
+  IRIX53_DISK_URL: ${{ secrets.IRIX53_DISK_URL }}
+  IRIX65_DISK_URL: ${{ secrets.IRIX65_DISK_URL }}
+  IRIX53_IMAGE: ${{ github.event.inputs.irix53_image }}
+  IRIX65_IMAGE: ${{ github.event.inputs.irix65_image }}
+  # Flavor switches: dispatch input > repo variable > on. The scripts read the
+  # same BUILD_O32/BUILD_N32 names from ci/local.conf in local runs.
+  BUILD_O32: ${{ github.event.inputs.build_o32 || vars.BUILD_O32 || 'true' }}
+  BUILD_N32: ${{ github.event.inputs.build_n32 || vars.BUILD_N32 || 'true' }}
+  GH_TOKEN: ${{ github.token }}
+
 jobs:
+  # Fail in seconds, with the exact fix in the message, when an ENABLED flavor
+  # has no image source (secret or local-path input); probe URLs warn-only.
+  # Emits the enabled-flavor list that build-native's matrix is built from.
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      flavors: ${{ steps.m.outputs.flavors }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check image sources; compute the flavor matrix
+        id: m
+        run: |
+          flavors=""
+          for f in o32 n32; do
+            if ./scripts/fetch-image.sh --flavor "$f" --enabled; then
+              ./scripts/fetch-image.sh --flavor "$f" --check-only
+              flavors="${flavors:+$flavors,}\"$f\""
+            fi
+          done
+          [ -n "$flavors" ] || { echo "::error::both flavors are disabled (build_o32/build_n32)"; exit 1; }
+          echo "flavors=[$flavors]" >> "$GITHUB_OUTPUT"
+          echo "building: [$flavors]"
+
   version:
     runs-on: ubuntu-latest
     outputs:
@@ -66,146 +137,88 @@ jobs:
             echo "version=$(date -u +%Y-%m-%d-%H-%M)" >> "$GITHUB_OUTPUT"
           fi
 
-  # o32 / IRIX 5.3: build iris from source, boot a real 5.3 disk, and compile
-  # natively over NFS. This is the long pole (iris build + IRIX boot + compile),
-  # so it runs in parallel with the cross job below.
-  build-o32-native:
-    needs: version
-    runs-on: ubuntu-latest
-    env:
-      IRIS_REPO: ${{ github.event.inputs.iris_repo || vars.IRIS_REPO || 'chronic8000/iris' }}
-      IRIS_REF:  ${{ github.event.inputs.iris_ref  || vars.IRIS_REF  || 'main' }}
-      IRIX53_DISK_URL: ${{ secrets.IRIX53_DISK_URL }}
+  # One job, two guests: o32 boots the 5.3 disk, n32 the 6.5 disk. Everything
+  # flavor-specific lives in the scripts; the matrix only picks the flavor.
+  build-native:
+    needs: [version, preflight]
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: ${{ fromJSON(needs.preflight.outputs.flavors) }}
+    name: build-${{ matrix.flavor }}-native
+    runs-on: ${{ github.event.inputs.runner_label || 'ubuntu-latest' }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install runtime libraries (Linux runners)
+        if: runner.os == 'Linux'
         run: |
+          # The prebuilt iris CLI links ALSA; unzip handles zipped disks/rb-cli.
           sudo apt-get update
-          # pkg-config + libasound2-dev: iris core. clang/libclang-dev: the chd
-          # feature (libchdman-rs bindgen). xkbcommon/wayland/gl: winit compile.
-          # mame-tools: provides chdman, needed to DHCP-enable a .chd boot disk.
-          sudo apt-get install -y \
-            pkg-config clang libclang-dev libasound2-dev \
-            libxkbcommon-dev libwayland-dev libgl-dev \
-            mame-tools unzip curl
+          sudo apt-get install -y unzip curl libasound2t64 || sudo apt-get install -y libasound2
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch prebuilt iris + iris-ci
+        run: |
+          ./scripts/fetch-iris.sh --dir iris \
+            --repo "${{ vars.IRIS_RELEASE_REPO || 'danifunker/iris' }}" \
+            --tag  "${{ github.event.inputs.iris_tag || vars.IRIS_TAG || 'latest' }}"
 
-      - name: Clone IRIS source
-        run: git clone --depth 1 --branch "$IRIS_REF" "https://github.com/$IRIS_REPO" iris
+      - name: Provide rb-cli
+        id: rb
+        run: echo "path=$(./scripts/ensure-rbcli.sh)" >> "$GITHUB_OUTPUT"
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Compute disk cache key
+        id: dk
+        run: echo "key=$(./scripts/fetch-image.sh --flavor ${{ matrix.flavor }} --cache-key)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the boot disk download
+        if: steps.dk.outputs.key != 'local'
+        uses: actions/cache@v4
         with:
-          workspaces: iris
+          path: guest-disk-${{ matrix.flavor }}.chd
+          key: irix-${{ matrix.flavor }}-disk-${{ steps.dk.outputs.key }}
 
-      - name: Build iris + iris-ci (--features chd,lightning)
-        working-directory: iris
+      - name: Obtain boot disk + native ${{ matrix.flavor }} build inside IRIS
         run: |
-          set -eux
-          cargo build --release --bin iris --bin iris-ci --features chd,lightning
-          ls -la target/release/iris target/release/iris-ci
-
-      - name: Fetch latest rb-cli (linux-x64)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -eux
-          url=$(gh api repos/danifunker/rusty-backup/releases/latest \
-            --jq '.assets[] | select(.name|test("^rb-cli-linux-x64-.*\\.tar\\.gz$")) | .browser_download_url')
-          curl -fsSL "$url" -o rb-cli.tar.gz
-          tar xzf rb-cli.tar.gz
-          chmod +x rb-cli
-          ./rb-cli --version
-
-      - name: Fetch + DHCP-enable the IRIX 5.3 boot disk
-        run: |
-          set -eux
-          [ -n "$IRIX53_DISK_URL" ] || { echo "set the IRIX53_DISK_URL secret (5.3 boot-disk URL: .chd or a .zip with one)"; exit 1; }
-          curl -fsSL "$IRIX53_DISK_URL" -o disk.download
-          # Accept a bare .chd or a .zip that contains one.
-          if unzip -l disk.download >/dev/null 2>&1; then
-            unzip -o disk.download -d diskdir
-            chd=$(find diskdir -iname '*.chd' | head -1)
-          else
-            chd=disk.download
-          fi
-          [ -n "${chd:-}" ] && [ -s "$chd" ] || { echo "no .chd found in the downloaded asset"; exit 1; }
-          # iris runs with the iris dir as cwd; ci/iris-irix53.toml references
-          # irix53.chd relative to that, so drop the disk in there.
-          cp "$chd" iris/irix53.chd
-          RB_CLI=./rb-cli CHDMAN=chdman ./scripts/irix-enable-dhcp.sh iris/irix53.chd
-
-      - name: Native o32/5.3 build inside IRIS (over NFS)
-        run: |
-          set -eux
+          IMG=$(./scripts/fetch-image.sh --flavor ${{ matrix.flavor }})
           ./scripts/iris-build.sh \
-            --version "${{ needs.version.outputs.version }}" \
+            --flavor ${{ matrix.flavor }} \
+            --image "$IMG" \
             --iris-dir iris \
-            --rb-cli ./rb-cli \
-            --no-package \
-            --bin-out irixscsitb-o32
-          file irixscsitb-o32 || true
+            --rb-cli "${{ steps.rb.outputs.path }}" \
+            --no-package --fresh \
+            --bin-out "irixscsitb-${{ matrix.flavor }}" \
+            --gui-out "scsitbgui-${{ matrix.flavor }}"
+          file "irixscsitb-${{ matrix.flavor }}" || true
 
       - uses: actions/upload-artifact@v4
         with:
-          name: irix-o32
-          path: irixscsitb-o32
-
-  # n32 / IRIX 6.x: cross-compiled. GNU ld links 6.x's n32 libs correctly.
-  build-n32-cross:
-    needs: version
-    runs-on: ubuntu-latest
-    container:
-      image: ${{ github.event.inputs.irix_toolchain_image || vars.IRIX_TOOLCHAIN_IMAGE }}
-    env:
-      IRIX_CC: ${{ vars.IRIX_CC || 'mips-sgi-irix6.5-gcc' }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cross-compile n32 (6.x)
-        run: |
-          set -eux
-          "$IRIX_CC" -DOS_IRIX -O2 -mabi=n32 -mips3 -o irixscsitb-n32 irixscsitb.c irix.c
-          file irixscsitb-n32 || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: irix-n32
-          path: irixscsitb-n32
+          name: irix-${{ matrix.flavor }}
+          # The GUI is best-effort (an image without Motif dev still yields the
+          # CLI), hence warn rather than error.
+          if-no-files-found: warn
+          path: |
+            irixscsitb-${{ matrix.flavor }}
+            scsitbgui-${{ matrix.flavor }}
 
   package:
-    needs: [version, build-o32-native, build-n32-cross]
+    needs: [version, build-native]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Pattern + merge so a disabled flavor's absent artifact is no error.
       - uses: actions/download-artifact@v4
         with:
-          name: irix-o32
-      - uses: actions/download-artifact@v4
-        with:
-          name: irix-n32
-      - name: Fetch latest rb-cli (linux-x64)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -eux
-          url=$(gh api repos/danifunker/rusty-backup/releases/latest \
-            --jq '.assets[] | select(.name|test("^rb-cli-linux-x64-.*\\.tar\\.gz$")) | .browser_download_url')
-          curl -fsSL "$url" -o rb-cli.tar.gz
-          tar xzf rb-cli.tar.gz
-          chmod +x rb-cli
-          ./rb-cli --version
+          pattern: irix-*
+          merge-multiple: true
+          path: dist
       - name: Build .iso + .hda + .tar.gz artifacts
         run: |
-          set -eux
-          # o32 (native 5.3-6.5 build) goes into the images and the tarball; the
-          # cross-built n32 is added to the tarball too.
-          ./scripts/package.sh \
-            --bin irixscsitb-o32 \
-            --tar-bin irixscsitb-n32 \
+          RB=$(./scripts/ensure-rbcli.sh)
+          ./scripts/package-dist.sh \
             --version "${{ needs.version.outputs.version }}" \
-            --outdir dist \
-            --rb-cli ./rb-cli \
-            --extra README.md
+            --dir dist --rb-cli "$RB"
       - uses: actions/upload-artifact@v4
         with:
           name: dist-images
@@ -215,29 +228,22 @@ jobs:
             dist/*.tar.gz
 
   release:
-    needs: [version, build-o32-native, build-n32-cross, package]
+    needs: [version, build-native, package]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: irix-o32
-          path: dist
-      - uses: actions/download-artifact@v4
-        with:
-          name: irix-n32
+          pattern: irix-*
+          merge-multiple: true
           path: dist
       - uses: actions/download-artifact@v4
         with:
           name: dist-images
           path: dist
       - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          set -eux
-          ls -la dist
-          gh release create "v${{ needs.version.outputs.version }}" \
-            --repo "${{ github.repository }}" \
-            --title "irixscsitb ${{ needs.version.outputs.version }}" \
-            --notes "Automated release: IRIX o32 (native 5.3 build) + n32 binaries, plus .iso (EFS CD-ROM), .hda (SGI EFS hard disk), and .tar.gz (binaries + README, for NFS/direct copy) for the IRIS emulator and real BlueSCSI/SGI hardware." \
-            dist/*
+          ./scripts/publish-release.sh \
+            --version "${{ needs.version.outputs.version }}" \
+            --dist dist \
+            --repo "${{ github.repository }}"

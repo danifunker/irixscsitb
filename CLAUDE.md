@@ -50,6 +50,7 @@ Upstream useful changes here are candidates to PR back to SonnyJim/bstoolbox.
 | `scripts/sync-irix-drop.sh` | Assembles the IRIX/IRIS drop folder. The only supported way. |
 | `scripts/irix-native-build.sh` | Shipped into the drop as `build.sh`; builds natively inside IRIX. |
 | `docs/HOWTO-IRIS.txt` | Shipped into the drop; instructions for the IRIX side. |
+| `docs/ci-iris.md` | The IRIS-in-CI sample-project guide: work-disk transfer, CoW overlays, PROM scripting, adapting to other IRIX projects. |
 
 **Three-layer split:** transport (`irix.c`/`linux.c`) → protocol (`toolbox.c`) →
 presentation (`irixscsitb.c`, `gui_motif.c`). The core must stay printless: it
@@ -166,37 +167,92 @@ to the above; `package.sh` preflights for the new grammar and errors clearly if
 rb-cli is too old.
 
 ```sh
-scripts/package.sh --bin irixscsitb-o32 --tar-bin irixscsitb-n32 \
+scripts/package.sh --bin irixscsitb-o32 --gui-bin scsitbgui-o32 \
+  --tar-bin irixscsitb-n32 --tar-bin scsitbgui-n32 \
   --version 2026-06-17 --rb-cli ./rb-cli --extra README.md
 ```
 
-The script `fsck`s and round-trip-verifies the `.iso` and `.hda`.
-`.github/workflows/release.yml` runs the full pipeline with **two builders in
-parallel** (see below), then packages and cuts a GitHub release. It needs both:
-the secret **`IRIX53_DISK_URL`** (an installed 5.3 boot disk, `.chd` or a `.zip`
-with one — feeds the native o32 job) and the variable **`IRIX_TOOLCHAIN_IMAGE`**
-(a mips-sgi-irix gcc + IRIX sysroot container — feeds the n32 cross job).
-Optional: `IRIS_REPO`/`IRIS_REF` (default `chronic8000/iris @ main`), `IRIX_CC`.
+The script `fsck`s and round-trip-verifies the `.iso` and `.hda` (each binary
+read back must `cmp` its source). `--gui-bin` adds the Motif GUI to the images
+(as `/scsitbgui`) and the tarball; `--tar-bin` is repeatable for tar-only
+extras (the n32 pair).
 
-### Two builders: native o32, cross n32
+`.github/workflows/release.yml` builds BOTH flavors natively in IRIS — one
+matrixed `build-native` job, prebuilt emulator binaries via
+`scripts/fetch-iris.sh` (no Rust toolchain in CI) — then packages and cuts the
+release. Hosted mode needs the secrets **`IRIX53_DISK_URL`** and
+**`IRIX65_DISK_URL`** (installed boot disks, bare `.chd` or a `.zip` with one;
+licensed IRIX — host them privately); downloads are cached keyed on the URL
+hash. Self-hosted mode: dispatch with `runner_label` + `irix53_image` /
+`irix65_image` local paths and the images never leave the machine (works on
+Linux and macOS runners — but note the iris release tarballs currently bundle
+`iris-ci` on Linux only; a self-hosted Mac needs a source-built iris-ci, and
+`fetch-iris.sh` says exactly that). Optional: `IRIS_RELEASE_REPO` /
+`IRIS_TAG` vars (default `danifunker/iris` @ latest) and the `iris_tag`
+dispatch input. The old `IRIX_TOOLCHAIN_IMAGE` cross-compile variable is gone.
 
-- **o32 (5.3-capable)** is built **natively in IRIS** — the cross-compiled o32
+**`scripts/release-local.sh`** is the third mode: the whole pipeline on the
+local machine — preflight (clean tree, HEAD pushed, `gh auth`), both native
+builds, package, publish. `--dry-run` builds + packages and prints the gh
+command instead; `--draft`, `--skip-n32`, `--allow-dirty` cover the partial
+cases. For people whose images can live neither at a secret URL nor on a
+registered runner.
+
+**One code path everywhere:** the workflow's step bodies are one-line calls
+into the same scripts release-local.sh runs — `ensure-rbcli.sh` (rb-cli from
+$RB_CLI/PATH/release download), `fetch-image.sh` (boot disk from
+IRIX*_IMAGE env = the dispatch inputs → ci/local.conf → IRIX*_DISK_URL
+download; `--check-only` is the preflight, `--cache-key` feeds actions/cache),
+`package-dist.sh` (assembles package.sh args from what was actually built —
+falling back to an n32-based image set, loudly, when o32 is disabled),
+`publish-release.sh` (canonical notes + artifact set). Shared flavor/conf
+resolution lives in `scripts/ci-lib.sh` (sourced, parses the conf, never
+executes it): **`ci/local.conf`** is the single per-machine config —
+IRIX*_IMAGE, IRIX*_DISK_URL, BUILD_O32/BUILD_N32 (flavor on/off), IRIS_DIR,
+IRIS_RELEASE_REPO/IRIS_TAG, RB_CLI — loaded by `load_local_conf` with flag >
+env > conf precedence. Flavor toggles surface as `--skip-o32/--skip-n32` on
+release-local.sh and as the `build_o32/build_n32` dispatch inputs (or
+BUILD_* repo vars) in Actions, where the preflight job computes the build
+matrix (`fetch-image.sh --enabled`). Only Actions-specific plumbing stays in
+YAML: topology/matrix, runner selection, secret→env mapping, cache/artifact
+transport, runner apt.
+
+### Two native builders in IRIS: o32 (5.3 guest) and n32 (6.5 guest)
+
+- **o32 (5.3-capable)** must be built **natively** — a cross-compiled o32
   may not link for 5.3 (GNU binutils can't link 5.3's o32 shared libs; see
-  [[irix-o32-cross-link-blocked]]). The `build-o32-native` release job builds
-  iris from source (`--features chd,lightning`), fetches + DHCP-enables the 5.3
-  disk, and runs `scripts/iris-build.sh --no-package --bin-out`.
-- **n32 (6.x only)** is cross-compiled (`build-n32-cross`); GNU ld links 6.x's
-  n32 libs fine.
+  [[irix-o32-cross-link-blocked]]).
+- **n32 (6.x only)** is built natively too, in a 6.5 guest: same script, and
+  native gets the Motif GUI built where a cross sysroot has no Xm headers. On
+  an Indy/IP22 running 6.5 `uname -s` is `IRIX` (not `IRIX64`), so the script
+  invokes `make irix-n32` explicitly — plain `make` would auto-pick o32 there.
 
-`scripts/iris-build.sh` launches IRIS headless with `--ci --nfs-dir`, exports the
-source over IRIS's **built-in NFS server**, mounts it in the guest (`mount
-192.168.0.1:/ /mnt`), runs `make`, and reads the binary straight back off the
-share — no scratch volume, no tar, no `iris-ci push/pull`. NFS needs the guest
-networked: `scripts/irix-enable-dhcp.sh` flips the boot disk's DHCP flags on so
-the IRIS NAT can hand it 192.168.0.2. `--no-package`/`--bin-out` let the CI job
-emit just the o32 binary so packaging stays centralised in the `package` job.
-(The old scratch-volume path is left commented in `ci/iris-irix53.toml` as a
-no-networking fallback.)
+`scripts/iris-build.sh --flavor o32|n32 --image <boot.chd>` launches IRIS
+headless (`--ci`), drives the PROM + shell over the serial control socket, and
+— when `--image` is omitted — takes the boot disk from `$IRIX53_IMAGE`/
+`$IRIX65_IMAGE` or from **`ci/local.conf`** (per-machine paths;
+`.gitignore`d, copy `ci/local.conf.example`; may also set `IRIS_DIR`;
+parsed KEY=VALUE, never sourced). It
+moves files on a **work disk**: an SGI EFS `.hda` that rb-cli fills from the
+staged sources (`new hd sgi-efs --from-dir`) and that the guest mounts at
+`/dev/dsk/dks0d2s0` — sources in, `out/` binaries back, read on the host with
+`rb-cli get`. **No networking in the guest at all** (no DHCP, no NVRAM eaddr,
+no NFS), and the boot image is **never written**: `ci/iris-irix53.toml` /
+`ci/iris-irix65.toml` set `overlay = true`, so guest writes land in
+`<image>.chd.diff.chd` (delete it or pass `--fresh` to reset; without the flag
+iris folds the diff back into the base on exit — the one thing a
+keep-the-image-fresh CI must avoid). The 5.3 flavor boots **single-user** via
+`sash` (`initstate=s`) so no rc2 service can hang a headless boot (a tgcware
+`prngd` did exactly that during bring-up); 6.5 boots multiuser cleanly.
+Guest status comes back via `echo TOKEN-'OK'` sentinels — quoted when typed,
+contiguous when printed — never by parsing prompts or `iris-ci run`'s
+`\nIRIS-CI-RC=` marker, which bash's ANSI color resets break; guest lines stay
+csh-AND-sh clean. `--no-package`/`--bin-out`/`--gui-out` let CI jobs emit bare
+binaries so packaging stays centralised in the `package` job. See
+`docs/ci-iris.md` for the full sample-project write-up (image requirements,
+transfer-channel options, adapting to other projects). The old NFS transfer
+path remains available manually (commented `[nfs]` stanza + eaddr/DHCP notes
+in `ci/iris-irix53.toml`); `scripts/irix-enable-dhcp.sh` supports it.
 
 ## IRIX 5.3 → 6.5 portability (important)
 
@@ -477,6 +533,13 @@ selects it on IRIX and it would not compile there.
   multi-KB/MB transfers took minutes and looked like a hang. Fixed in `irix.c`
   (single readiness check, no per-block sleep). Still needs end-to-end
   verification on the emulator/hardware.
+- **Prebuilt iris pinning: don't pin `IRIS_TAG` before v2026-07-28-20-04** —
+  older releases bundled `iris-ci` on linux x64/arm64 only (and used varying
+  archive layouts). From that release on, every `IRIS-cli-*` archive ships
+  `iris` + `iris-ci` flat on all targets (verified 2026-07-28, incl. a full
+  o32 build driven by the prebuilt macOS pair). `scripts/fetch-iris.sh`
+  extracts layout-tolerantly and fails with the exact workaround if an old
+  tag is pinned.
 - **32-char filename limit** on `/shared` listings: structural to the protocol
   (`ToolboxFileEntry.name` is 32 bytes); not a bug.
 - **Firmware `SEND_FILE_10` offset semantics:** the documented spec says

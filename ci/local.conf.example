@@ -1,0 +1,64 @@
+# ci/local.conf.example — template for YOUR machine's build configuration.
+#
+#   cp ci/local.conf.example ci/local.conf
+#   $EDITOR ci/local.conf
+#
+# Then no per-run arguments are needed:
+#
+#   scripts/iris-build.sh --flavor o32 --version 1.0   # one flavor
+#   scripts/release-local.sh                           # build both + publish
+#
+# The real ci/local.conf is .gitignore'd — personal paths and disk-image names
+# never belong in the repo (see CLAUDE.md). This .example is the only
+# committed copy.
+#
+# Format: KEY=VALUE, one per line, # comments. Values may be double-quoted
+# (needed if a path contains spaces). The file is parsed, not sourced — no
+# shell code runs from it. Precedence everywhere: command-line flag >
+# environment variable of the same name > this file. The GitHub Actions
+# workflow never reads this file (it is not committed); there the same
+# variables arrive from repo secrets and dispatch inputs instead.
+
+# ---- boot disks (the only settings most people need) ------------------------
+# Installed IRIX system disks WITH the dev tools (cc, make, headers; Motif for
+# the GUI). Root's password must be empty (or export IRIX_ROOT_PASSWORD).
+#
+# TIP: if your images live on a NAS/network share, point these at LOCAL copies
+# — the emulator reads the disk constantly, and copy-on-write means the copy
+# stays pristine anyway (writes go to <image>.chd.diff.chd next to it).
+
+# IRIX 5.3 + IDO -> the o32 binaries (portable, run on IRIX 5.3-6.5)
+IRIX53_IMAGE=/path/to/irix53-dev.chd
+
+# IRIX 6.5 + MIPSpro -> the n32 binaries (faster, IRIX 6.x only)
+IRIX65_IMAGE=/path/to/irix65-dev.chd
+
+# No local file? A private download URL works instead of (or as a fallback
+# for) each image — the same thing the IRIX53_DISK_URL/IRIX65_DISK_URL repo
+# secrets do in CI. Accepts a bare .chd or a .zip containing one.
+#IRIX53_DISK_URL=https://example.com/private/irix53-dev.chd
+#IRIX65_DISK_URL=https://example.com/private/irix65-dev.zip
+
+# ---- enable/disable a flavor -------------------------------------------------
+# Only have one of the two images? Turn the other flavor off (0/no/false/off)
+# and scripts/release-local.sh skips it; packaging adapts to what was built.
+# (In CI the same switch is the build_o32/build_n32 dispatch input or the
+# BUILD_O32/BUILD_N32 repo variable.)
+#BUILD_O32=1
+#BUILD_N32=1
+
+# ---- tools ---------------------------------------------------------------------
+# Where the iris emulator lives (default ../iris). Both a source build and a
+# fetch-iris.sh download dir work — the scripts look for
+# <dir>/target/release/{iris,iris-ci}. Relative paths are tried from your
+# current directory first, then from the repo root.
+#IRIS_DIR=../iris
+
+# Which iris releases fetch-iris.sh pulls, and an optional version pin
+# (default: danifunker/iris @ latest; don't pin before v2026-07-28-20-04 —
+# older tags lack iris-ci outside linux x64/arm64).
+#IRIS_RELEASE_REPO=danifunker/iris
+#IRIS_TAG=v2026-07-28-20-04
+
+# rb-cli binary to use (default: PATH, else ensure-rbcli.sh downloads one).
+#RB_CLI=/usr/local/bin/rb-cli

@@ -1,0 +1,38 @@
+# ci/iris-irix65.toml — IRIS machine config for the headless CI build of the
+# n32/mips3 (IRIX 6.x-only, faster) binaries.
+#
+# Boots an ALREADY-INSTALLED IRIX 6.5 system disk (validated with 6.5.22 on
+# an emulated Indy/IP22). scripts/iris-build.sh overrides the disk paths
+# (--scsi1 boot disk, --scsi2 work disk), boots MULTIUSER — the 6.5 rc set
+# comes up clean headless, unlike some 5.3 third-party services — logs in as
+# root on the serial console, runs `make irix-n32` (+ the GUI, non-fatally),
+# and pulls the binaries back off the work disk with rb-cli.
+#
+# NOTE an Indy/IP22 running 6.5 reports `uname -s` = IRIX (not IRIX64), so
+# plain `make` would auto-select o32 — the build script asks for irix-n32
+# explicitly. The o32 artifact for releases still comes from the 5.3 builder:
+# an o32 linked on 6.5 would not be the portable 5.3-6.5 binary.
+#
+# BASE DISK: any installed IRIX 6.5 with MIPSpro cc + make + headers (and a
+# Motif tree for the GUI). Root's password must be empty (or export
+# IRIX_ROOT_PASSWORD). Supply your own image — none is referenced by name.
+#
+# THE BOOT DISK IS NEVER WRITTEN: overlay = true keeps every guest write in
+# `<image>.chd.diff.chd`; delete it (or iris-build.sh --fresh) to reset.
+
+headless   = true
+no_audio   = true
+banks      = [128, 128, 0, 0]
+nvram      = "nvram-irix65-ci.bin"  # separate from 5.3 so PROM envs don't collide
+serial_log = "iris-ci-console.log"  # iris-build.sh overrides with --serial-log
+
+# The installed IRIX 6.5 boot disk (iris-build.sh passes --scsi1).
+[scsi.1]
+path    = "irix65.chd"
+cdrom   = false
+overlay = true
+
+# The work disk (see ci/iris-irix53.toml for the full story).
+[scsi.2]
+path  = "work.hda"
+cdrom = false

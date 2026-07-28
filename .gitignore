@@ -75,3 +75,7 @@ tests/irixscsitb-mock
 # build machine as a static input; buildhost.h is written fresh by every build.
 version.h
 buildhost.h
+
+# Per-machine boot-disk locations for the IRIS CI build - personal paths never
+# belong in the repo. Copy ci/local.conf.example and edit.
+ci/local.conf
