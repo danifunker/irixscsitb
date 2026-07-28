@@ -15,3 +15,8 @@ jobs:
 
     - name: Build
       run: meson compile -C build
+
+    # Host-side smoke test against the mock SCSI bus (tests/mock_os.c): the
+    # protocol + two-stage detection logic, no hardware or emulator needed.
+    - name: Protocol smoke test (mock SCSI bus)
+      run: make test
