@@ -142,8 +142,11 @@ tar: default
 # the host's own C compiler defaults; nothing here ships in a release.
 # Expected: BlueSCSI + ZuluSCSI marked [TOOLBOX], IRIS EMUL DISK NOT marked,
 # and the page-0x31 liar reported as "claims toolbox, no 0xD9 answer".
+# -D_POSIX_C_SOURCE: strict -std=c89 makes glibc hide POSIX declarations
+# (getopt/optarg/optind), which only shows up on Linux CI - macOS exposes them
+# regardless. Affects this host-side build only; MIPSpro cc ignores the issue.
 test: version.h buildhost.h
-	$(CC) -std=c89 -Wall -DOS_IRIX -I. -o tests/irixscsitb-mock irixscsitb.c toolbox.c version.c tests/mock_os.c
+	$(CC) -std=c89 -Wall -D_POSIX_C_SOURCE=200112L -DOS_IRIX -I. -o tests/irixscsitb-mock irixscsitb.c toolbox.c version.c tests/mock_os.c
 	@echo "*** mock bus scan:"
 	@./tests/irixscsitb-mock -b
 
