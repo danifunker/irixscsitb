@@ -185,6 +185,22 @@ the tarball, so the three can never disagree. The EFS volume label defaults
 to **`SCSITB`** (`--name`, ≤6 bytes — it's what the IRIX desktop shows;
 `BSTOOL` was a bstoolbox-era leftover).
 
+**Software Manager distribution:** `scripts/iris-gendist.sh` runs SGI's
+`gendist` natively in the 5.3 guest (old product format — readable by every
+inst 5.3–6.5, verified installing on both incl. the o32↔n32 subsystem swap)
+over `inst/irixscsitb.spec` + `inst/irixscsitb.idb`, yielding the product
+trio; `package.sh --inst-dir` puts it at `/dist` on the media (mediad +
+`inst -f /CDROM/dist`) and emits a `.tardist`. gendist comes from
+`inst_dev.sw` on the IDO 5.3 CD — the script auto-installs it into the
+overlay when missing (`IRIX53_IDO_ISO` conf key), resolving inst's
+QUIT-TIME machine-incompatibility report with the explicit
+`IDO_CONFLICT_CHOICES` conf choices (never guessed). release-local.sh runs
+it as stage 4/6 when both flavors built (`--skip-inst` / `BUILD_INST=0` to
+disable); the Actions workflow does NOT have this stage yet (local-first per
+Dani — packaging degrades gracefully without `dist/inst/`). Serial-driving
+lessons (inst pagers, prompt sync, quit-time conflicts, 5.3 `mkdir -p`
+erroring on existing dirs) are in docs/ci-iris.md.
+
 `.github/workflows/release.yml` builds BOTH flavors natively in IRIS — one
 matrixed `build-native` job, prebuilt emulator binaries via
 `scripts/fetch-iris.sh` (no Rust toolchain in CI) — then packages and cuts the

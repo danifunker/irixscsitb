@@ -1,0 +1,4 @@
+f 0755 root sys usr/sbin/irixscsitb dist53/irixscsitb irixscsitb.sw.o32
+f 0755 root sys usr/sbin/irixscsitb dist65/irixscsitb irixscsitb.sw.n32
+f 0755 root sys usr/sbin/scsitbgui dist53/scsitbgui irixscsitb.sw.o32
+f 0755 root sys usr/sbin/scsitbgui dist65/scsitbgui irixscsitb.sw.n32

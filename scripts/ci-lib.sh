@@ -23,7 +23,8 @@ conf_get() {
 # after argument parsing.
 load_local_conf() {
 	for _k in IRIX53_IMAGE IRIX65_IMAGE IRIX53_DISK_URL IRIX65_DISK_URL \
-	          IRIS_DIR IRIS_RELEASE_REPO IRIS_TAG RB_CLI BUILD_O32 BUILD_N32; do
+	          IRIS_DIR IRIS_RELEASE_REPO IRIS_TAG RB_CLI BUILD_O32 BUILD_N32 \
+	          BUILD_INST IRIX53_IDO_ISO IDO_CONFLICT_CHOICES; do
 		_cur=$(eval "printf %s \"\${$_k:-}\"")
 		[ -n "$_cur" ] && continue
 		_v=$(conf_get "$_k")

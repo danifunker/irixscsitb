@@ -6,6 +6,7 @@
 #
 # Attaches whatever of the canonical set exists in --dist:
 #   irixscsitb-o32  scsitbgui-o32  irixscsitb-n32  scsitbgui-n32
+#   irixscsitb-<version>.tardist                   (when the inst dist built)
 #   irixscsitb-<version>.iso  .hda  .tar.gz        (the three are required)
 #
 # Usage:
@@ -41,9 +42,11 @@ done
 DIST=$(cd "$DIST" 2>/dev/null && pwd) || die "dist dir not found: $DIST"
 TAG="v$VERSION"
 
-# Canonical artifact set: optional binaries first, then the required images.
+# Canonical artifact set: optional binaries + tardist first, then the
+# required images.
 set --
-for f in irixscsitb-o32 scsitbgui-o32 irixscsitb-n32 scsitbgui-n32; do
+for f in irixscsitb-o32 scsitbgui-o32 irixscsitb-n32 scsitbgui-n32 \
+         "irixscsitb-$VERSION.tardist"; do
 	[ -f "$DIST/$f" ] && set -- "$@" "$DIST/$f"
 done
 for f in "irixscsitb-$VERSION.iso" "irixscsitb-$VERSION.hda" "irixscsitb-$VERSION.tar.gz"; do

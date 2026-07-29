@@ -86,7 +86,28 @@ exit* — a slow rewrite of exactly the file CI wants immutable.
 | Built-in NFS | both | NVRAM `eaddr` + an IP the NAT routes | fine for big trees; needs one-time PROM setup (see ci/iris-irix53.toml comments) |
 | Scratch volume | both | none | raw sectors + guest `dd`; `iris-ci put/get`; no filesystem — last resort |
 
-## Driving the guest: lessons baked into iris-build.sh
+## The Software Manager distribution (inst/swmgr)
+
+`scripts/iris-gendist.sh` produces a real `inst`-installable product —
+`irixscsitb` / `irixscsitb.idb` / `irixscsitb.sw`, subsystems `sw.o32`
+(default, 5.3–6.5) and `sw.n32` (opt-in, 6.x) — by running SGI's own
+**`gendist`** in the 5.3 guest (its old product format is readable by every
+inst through 6.5; verified installing on both 5.3 and 6.5, including the
+o32→n32 subsystem swap). The product description lives in
+`inst/irixscsitb.spec` + `inst/irixscsitb.idb`; packaging places the trio at
+`/dist` on the `.iso`/`.hda` (mediad + `inst -f /CDROM/dist` just work) and
+emits a standalone `.tardist`.
+
+gendist ships in the **`inst_dev.sw`** subsystem ("Software Packager"), which
+dev images often carry only the books for. Set `IRIX53_IDO_ISO` in
+`ci/local.conf` to the IRIS Development Option 5.3 CD image and the script
+installs it into the guest's overlay automatically — including resolving
+inst's *quit-time* machine-incompatibility report with the explicit choices
+in `IDO_CONFLICT_CHOICES` (reviewed once, never guessed). All of it lands in
+the copy-on-write overlay; the boot image stays pristine, and the whole cold
+path from a fresh overlay is scripted and repeatable.
+
+## Driving the guest: lessons baked into iris-build.sh + iris-gendist.sh
 
 - **All status comes back through files or sentinels, not prompts.** The
   serial console is hostile to parsing: hostnames differ, root's shell differs
@@ -104,6 +125,15 @@ exit* — a slow rewrite of exactly the file CI wants immutable.
   long operations loop shorter `serial-wait`s.
 - **The control socket path must be short** (Unix `SUN_LEN` ≈ 104 bytes) —
   it lives in `/tmp`, not in the work dir.
+- **IRIX 5.3's `mkdir -p` errors when the directory already exists** — use
+  `test -d X || mkdir X` on reused overlays.
+- **Driving `inst` needs prompt discipline**: `stty rows 1000` first (or its
+  pagers eat your commands), synchronize on a fresh `Inst>` after every
+  selection (they stream progress for many seconds — fixed sleeps lose),
+  take flow-control text from the serial *socket* capture, never the
+  write-buffered console log — and expect the machine-incompatibility check
+  to fire **at quit**, behind a `more?` pager, even when `conflicts` said
+  "No conflicts" moments before.
 
 ## Adapting this to your own IRIX project
 

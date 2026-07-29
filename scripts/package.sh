@@ -37,6 +37,10 @@
 #   --dist65-bin PATH  n32 CLI  -> dist65/irixscsitb    two CLIs is required)
 #   --dist53-gui PATH  o32 GUI  -> dist53/scsitbgui    (optional)
 #   --dist65-gui PATH  n32 GUI  -> dist65/scsitbgui    (optional)
+#   --inst-dir DIR    gendist product trio (irixscsitb, .idb, .sw) from
+#                     scripts/iris-gendist.sh -> media /dist (Software
+#                     Manager-installable: inst -f /CDROM/dist) + a
+#                     irixscsitb-VER.tardist artifact (plain tar swmgr opens)
 #   --version VER     version string used in output filenames (required)
 #   --outdir DIR      where to write the artifacts       [dist]
 #   --rb-cli PATH     rb-cli binary    [$RB_CLI, then `rb-cli` on PATH]
@@ -55,6 +59,7 @@ BIN53=""
 GUI53=""
 BIN65=""
 GUI65=""
+INST_DIR=""
 VERSION=""
 OUTDIR="dist"
 RB="${RB_CLI:-rb-cli}"
@@ -76,6 +81,7 @@ while [ $# -gt 0 ]; do
 		--dist53-gui) GUI53="$2"; shift 2 ;;
 		--dist65-bin) BIN65="$2"; shift 2 ;;
 		--dist65-gui) GUI65="$2"; shift 2 ;;
+		--inst-dir)  INST_DIR="$2"; shift 2 ;;
 		--version)  VERSION="$2"; shift 2 ;;
 		--outdir)   OUTDIR="$2"; shift 2 ;;
 		--rb-cli)   RB="$2"; shift 2 ;;
@@ -100,6 +106,11 @@ for f in "$BIN53" "$GUI53" "$BIN65" "$GUI65"; do
 done
 [ -z "$GUI53" ] || [ -n "$BIN53" ] || die "--dist53-gui without --dist53-bin"
 [ -z "$GUI65" ] || [ -n "$BIN65" ] || die "--dist65-gui without --dist65-bin"
+if [ -n "$INST_DIR" ]; then
+	for f in irixscsitb irixscsitb.idb irixscsitb.sw; do
+		[ -f "$INST_DIR/$f" ] || die "--inst-dir is missing $f (run scripts/iris-gendist.sh first)"
+	done
+fi
 command -v "$RB" >/dev/null 2>&1 || [ -x "$RB" ] || die "rb-cli not found: $RB"
 
 # Fail early (and clearly) if this rb-cli predates the current builder grammar.
@@ -132,6 +143,13 @@ README_DIST="$OUTDIR/.README-dist.$$"
 	echo "Motif, scsitbgui (the GUI). EFS media store files mode 0644: after"
 	echo "copying off the CD/disk, chmod +x the binaries. The .tar.gz carries"
 	echo "the executable bits already."
+	if [ -n "$INST_DIR" ]; then
+		echo ""
+		echo "PREFER THE SOFTWARE MANAGER? dist/ is a real inst distribution:"
+		echo "    inst -f /CDROM/dist        (or Software Manager -> /CDROM/dist)"
+		echo "installs irixscsitb.sw.o32 by default (5.3-6.5); select"
+		echo "irixscsitb.sw.n32 instead on 6.x for the faster build."
+	fi
 } > "$README_DIST"
 
 PAYLOAD=""
@@ -141,6 +159,11 @@ add_payload() { PAYLOAD="$PAYLOAD$1|$2
 [ -z "$GUI53" ] || add_payload "$GUI53" "/dist53/scsitbgui"
 [ -z "$BIN65" ] || add_payload "$BIN65" "/dist65/irixscsitb"
 [ -z "$GUI65" ] || add_payload "$GUI65" "/dist65/scsitbgui"
+if [ -n "$INST_DIR" ]; then
+	add_payload "$INST_DIR/irixscsitb" "/dist/irixscsitb"
+	add_payload "$INST_DIR/irixscsitb.idb" "/dist/irixscsitb.idb"
+	add_payload "$INST_DIR/irixscsitb.sw" "/dist/irixscsitb.sw"
+fi
 add_payload "$README_DIST" "/README-dist.txt"
 for f in $EXTRAS; do
 	add_payload "$f" "/$(basename "$f")"
@@ -153,6 +176,7 @@ put_payload() {
 	ref="$1"
 	[ -z "$BIN53" ] || "$RB" mkdir "$ref" /dist53
 	[ -z "$BIN65" ] || "$RB" mkdir "$ref" /dist65
+	[ -z "$INST_DIR" ] || "$RB" mkdir "$ref" /dist
 	printf '%s' "$PAYLOAD" | while IFS='|' read -r host guest; do
 		[ -n "$host" ] || continue
 		"$RB" put "$ref" "$host" "$guest"
@@ -213,6 +237,14 @@ if [ "$DO_TAR" = 1 ]; then
 	tar czf "$TARBALL" -C "$stage" "$top"
 	rm -rf "$stage"
 	echo "    contents:"; tar tzf "$TARBALL" | sed 's/^/      /'
+fi
+
+# The tardist: a plain tar of the product trio, the classic "download and
+# open with Software Manager" vector (swmgr/inst read it directly).
+if [ -n "$INST_DIR" ]; then
+	TARDIST="$OUTDIR/irixscsitb-$VERSION.tardist"
+	echo ">>> tardist: $TARDIST"
+	( cd "$INST_DIR" && tar cf "$TARDIST" irixscsitb irixscsitb.idb irixscsitb.sw )
 fi
 
 rm -f "$README_DIST"

@@ -57,6 +57,8 @@ build-*.log
 *.su
 *.idb
 *.pdb
+# ...but the IRIX inst product file-list is a SOURCE file, not a VS debug db
+!inst/irixscsitb.idb
 
 # Kernel Module Compile Results
 *.mod*

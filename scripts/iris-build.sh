@@ -246,7 +246,9 @@ fi
 # /mnt may not exist on a 5.3 disk; -p makes both cases a no-op. Building in
 # /tmp keeps object files off the work disk and inside the overlay.
 echo ">>> mounting work disk + building ($FLAVOR)"
-ser_send "mkdir -p /mnt && mount /dev/dsk/dks0d2s0 /mnt && echo IRIXTB-'MNT'-OK"
+# test -d, not mkdir -p: IRIX 5.3's mkdir -p errors when the dir already
+# exists (bites on a reused overlay).
+ser_send "test -d /mnt || mkdir /mnt ; mount /dev/dsk/dks0d2s0 /mnt && echo IRIXTB-'MNT'-OK"
 ser_wait "IRIXTB-MNT-OK" 60 || { echo "work disk mount failed:" >&2; tail -10 "$CONSOLE" >&2; exit 1; }
 
 # Every guest line below is deliberately csh-AND-sh clean (`;`, `&&`, `||`,

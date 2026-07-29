@@ -47,6 +47,23 @@ IRIX65_IMAGE=/path/to/irix65-dev.chd
 #BUILD_O32=1
 #BUILD_N32=1
 
+# ---- Software Manager (inst/swmgr) distribution ------------------------------
+# scripts/iris-gendist.sh builds a real inst-installable product natively with
+# SGI's gendist in the 5.3 guest. gendist comes from the inst_dev.sw subsystem
+# ("Software Packager") on the IRIS Development Option 5.3 CD — point this at
+# that ISO and the script installs it into the guest's overlay automatically
+# the first time (the boot image itself is never touched):
+#IRIX53_IDO_ISO=/path/to/IRIS-Development-Option-5.3.iso
+#
+# If that inst session reports conflicts (e.g. a patch on your image that
+# inst considers machine-incompatible under emulation), put the resolution
+# choices here after reviewing them once — they are applied verbatim, never
+# guessed (this is exactly what you'd type at the Inst> prompt):
+#IDO_CONFLICT_CHOICES=1a
+#
+# Skip building the inst distribution entirely (it needs both flavors built):
+#BUILD_INST=1
+
 # ---- tools ---------------------------------------------------------------------
 # Where the iris emulator lives (default ../iris). Both a source build and a
 # fetch-iris.sh download dir work — the scripts look for

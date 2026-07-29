@@ -32,6 +32,10 @@
 #                  that binary is 6.x-only)
 #   --skip-n32     release with the o32 pair only (no 6.5 image available);
 #                  the .iso/.hda always carry o32 anyway
+#   --skip-inst    skip the Software Manager distribution (iris-gendist.sh);
+#                  it is also skipped automatically when either flavor is,
+#                  since the product wants both subsystems (BUILD_INST=0 in
+#                  ci/local.conf disables it durably)
 #   --allow-dirty  permit uncommitted changes (binaries stamp <rev>-dirty)
 #
 # A flavor can also be switched off durably with BUILD_O32=0 / BUILD_N32=0 in
@@ -46,6 +50,7 @@ DRAFT=0
 DRYRUN=0
 SKIP_O32=0
 SKIP_N32=0
+SKIP_INST=0
 ALLOW_DIRTY=0
 OUTDIR=""
 IRIS_DIR_ARG=""
@@ -60,6 +65,7 @@ while [ $# -gt 0 ]; do
 		--dry-run)     DRYRUN=1; shift ;;
 		--skip-o32)    SKIP_O32=1; shift ;;
 		--skip-n32)    SKIP_N32=1; shift ;;
+		--skip-inst)   SKIP_INST=1; shift ;;
 		--allow-dirty) ALLOW_DIRTY=1; shift ;;
 		--outdir)      OUTDIR="$2"; shift 2 ;;
 		--iris-dir)    IRIS_DIR_ARG="$2"; shift 2 ;;
@@ -83,12 +89,21 @@ if [ "$DO_N32" = 1 ] && ! flavor_enabled n32; then
 fi
 [ "$DO_O32" = 1 ] || [ "$DO_N32" = 1 ] || die "nothing to build — both flavors are disabled"
 
+# The inst distribution wants both subsystems' binaries.
+DO_INST=1
+[ "$SKIP_INST" = 1 ] && DO_INST=0
+case "${BUILD_INST:-1}" in 0|[Nn][Oo]|[Ff][Aa][Ll][Ss][Ee]|[Oo][Ff][Ff]) DO_INST=0 ;; esac
+if [ "$DO_INST" = 1 ] && { [ "$DO_O32" = 0 ] || [ "$DO_N32" = 0 ]; }; then
+	echo "release-local: inst distribution skipped (needs both flavors built)"
+	DO_INST=0
+fi
+
 [ -n "$VERSION" ] || VERSION=$(date -u +%Y-%m-%d-%H-%M)
 [ -n "$OUTDIR" ] || OUTDIR="$REPO/dist/release-$VERSION"
 TAG="v$VERSION"
 
 # ---- 1. preflight ------------------------------------------------------------
-echo "==> [1/5] preflight"
+echo "==> [1/6] preflight"
 command -v gh >/dev/null 2>&1 || die "gh not found — needed to create the release"
 # Same provisioning path as the Actions jobs: explicit choice > PATH >
 # release download (ensure-rbcli.sh).
@@ -127,33 +142,43 @@ OUTDIR=$(cd "$OUTDIR" && pwd)
 # combined wall time barely differs. fetch-image resolves a local path (conf/
 # env) or downloads from a *_DISK_URL — identical to the Actions build jobs.
 if [ "$DO_O32" = 1 ]; then
-	echo "==> [2/5] native o32 build (IRIX 5.3 guest)"
+	echo "==> [2/6] native o32 build (IRIX 5.3 guest)"
 	IMG=$("$REPO/scripts/fetch-image.sh" --flavor o32 --dest "$OUTDIR/guest-disk-o32.chd")
 	# shellcheck disable=SC2086 # IRIS_ARGS is deliberately word-split
 	"$REPO/scripts/iris-build.sh" --flavor o32 --image "$IMG" $IRIS_ARGS --rb-cli "$RB" \
 		--no-package --fresh --outdir "$OUTDIR"
 else
-	echo "==> [2/5] o32 build skipped"
+	echo "==> [2/6] o32 build skipped"
 fi
 
 if [ "$DO_N32" = 1 ]; then
-	echo "==> [3/5] native n32 build (IRIX 6.5 guest)"
+	echo "==> [3/6] native n32 build (IRIX 6.5 guest)"
 	IMG=$("$REPO/scripts/fetch-image.sh" --flavor n32 --dest "$OUTDIR/guest-disk-n32.chd")
 	# shellcheck disable=SC2086
 	"$REPO/scripts/iris-build.sh" --flavor n32 --image "$IMG" $IRIS_ARGS --rb-cli "$RB" \
 		--no-package --fresh --outdir "$OUTDIR"
 else
-	echo "==> [3/5] n32 build skipped"
+	echo "==> [3/6] n32 build skipped"
 fi
 
-# ---- 4. package -----------------------------------------------------------------
-echo "==> [4/5] packaging .iso / .hda / .tar.gz"
+# ---- 4. Software Manager distribution ----------------------------------------------
+if [ "$DO_INST" = 1 ]; then
+	echo "==> [4/6] inst distribution (gendist in the 5.3 guest)"
+	# shellcheck disable=SC2086
+	"$REPO/scripts/iris-gendist.sh" --dir "$OUTDIR" --version "$VERSION" \
+		$IRIS_ARGS --rb-cli "$RB"
+else
+	echo "==> [4/6] inst distribution skipped"
+fi
+
+# ---- 5. package -----------------------------------------------------------------
+echo "==> [5/6] packaging .iso / .hda / .tar.gz"
 "$REPO/scripts/package-dist.sh" --version "$VERSION" --dir "$OUTDIR" --rb-cli "$RB"
 
-# ---- 5. release ------------------------------------------------------------------
+# ---- 6. release ------------------------------------------------------------------
 # publish-release.sh is the same script the Actions release job runs, so the
 # notes text and artifact set cannot drift between the two paths.
-echo "==> [5/5] publishing $TAG"
+echo "==> [6/6] publishing $TAG"
 set -- --version "$VERSION" --dist "$OUTDIR"
 [ "$DRAFT" = 0 ]  || set -- "$@" --draft
 [ "$DRYRUN" = 0 ] || set -- "$@" --dry-run

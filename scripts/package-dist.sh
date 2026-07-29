@@ -52,5 +52,8 @@ set -- --version "$VERSION" --outdir "$DIR" --rb-cli "$RB" --extra "$REPO/README
 [ -f "$DIR/scsitbgui-o32" ]  && set -- "$@" --dist53-gui "$DIR/scsitbgui-o32"
 [ -f "$DIR/irixscsitb-n32" ] && set -- "$@" --dist65-bin "$DIR/irixscsitb-n32"
 [ -f "$DIR/scsitbgui-n32" ]  && set -- "$@" --dist65-gui "$DIR/scsitbgui-n32"
+# A gendist product trio in DIR/inst (scripts/iris-gendist.sh) rides along as
+# the Software Manager-installable /dist + the .tardist artifact.
+[ -f "$DIR/inst/irixscsitb.sw" ] && set -- "$@" --inst-dir "$DIR/inst"
 
 exec "$REPO/scripts/package.sh" "$@"
