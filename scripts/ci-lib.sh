@@ -24,7 +24,7 @@ conf_get() {
 load_local_conf() {
 	for _k in IRIX53_IMAGE IRIX65_IMAGE IRIX53_DISK_URL IRIX65_DISK_URL \
 	          IRIS_DIR IRIS_RELEASE_REPO IRIS_TAG RB_CLI BUILD_O32 BUILD_N32 \
-	          BUILD_INST IRIX53_IDO_ISO IDO_CONFLICT_CHOICES; do
+	          BUILD_INST IRIX53_IDO_ISO; do
 		_cur=$(eval "printf %s \"\${$_k:-}\"")
 		[ -n "$_cur" ] && continue
 		_v=$(conf_get "$_k")
@@ -78,4 +78,29 @@ flavor_enabled() {
 		0|[Nn][Oo]|[Ff][Aa][Ll][Ss][Ee]|[Oo][Ff][Ff]) return 1 ;;
 		*) return 0 ;;
 	esac
+}
+
+# stage_inst_inputs FLAVOR DISTVER DESTDIR — write the version-stamped,
+# flavor-specific inst product description (irixscsitb.spec + .idb) into
+# DESTDIR. One subsystem per product: each OS packages ITS OWN build with its
+# OWN gendist, so the o32 product ships in dist53/ (5.3 format, readable
+# 5.3-6.5) and the n32 product in dist65/ (6.5 format). idb sources point at
+# bin/ under the gendist -sbase.
+stage_inst_inputs() {
+	_fl="$1"; _dv="$2"; _dst="$3"
+	case "$_fl" in
+		o32) _abi="o32, runs on IRIX 5.3-6.5" ;;
+		n32) _abi="n32, IRIX 6.x only, faster" ;;
+		*)   return 1 ;;
+	esac
+	sed -e "s/@VERSION@/$_dv/" -e "s/@SUBSYS@/$_fl/" -e "s/@ABI_DESC@/$_abi/" \
+		"${REPO}/inst/irixscsitb.spec" > "$_dst/irixscsitb.spec"
+	sed -e "s/@SUBSYS@/$_fl/" \
+		"${REPO}/inst/irixscsitb.idb" > "$_dst/irixscsitb.idb"
+}
+
+# dist_version_from VERSION — numeric inst version (first 10 digits of the
+# release version; date-stamped versions give sane inst upgrade ordering).
+dist_version_from() {
+	printf %s "$1" | tr -cd '0-9' | cut -c1-10
 }

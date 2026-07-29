@@ -42,7 +42,15 @@
 #   scripts/iris-build.sh --flavor o32 [--image /path/to/irix53.chd] \
 #       [--iris-dir ../iris] [--config ci/iris-irix53.toml] [--rb-cli rb-cli] \
 #       [--outdir dist] [--workdir DIR] [--fresh] [--version V] \
-#       [--no-package] [--bin-out PATH] [--gui-out PATH]
+#       [--no-package] [--no-gendist] [--bin-out PATH] [--gui-out PATH]
+#
+# PACKAGING BY THE OS THAT BUILT IT: unless --no-gendist, the same guest
+# session also runs ITS OWN native gendist over inst/irixscsitb.{spec,idb},
+# emitting the Software Manager product trio to $OUTDIR/inst53 (o32 flavor)
+# or $OUTDIR/inst65 (n32) — a 5.3-format product from the 5.3 guest, a
+# 6.5-format one from the 6.5 guest. If the guest has no /usr/sbin/gendist
+# (the inst_dev.sw "Software Packager" subsystem), the step is skipped with a
+# warning — scripts/iris-gendist.sh can provision it from the IDO CD.
 #
 # WHERE THE BOOT DISK COMES FROM (first match wins):
 #   1. --image PATH
@@ -70,6 +78,7 @@ OUTDIR="$REPO/dist"
 WORKDIR=""
 FRESH=0
 DO_PACKAGE=1
+DO_GENDIST=1
 BIN_OUT=""
 GUI_OUT=""
 ROOT_PW="${IRIX_ROOT_PASSWORD:-}"
@@ -88,6 +97,7 @@ while [ $# -gt 0 ]; do
 		--workdir)    WORKDIR="$2"; shift 2 ;;
 		--fresh)      FRESH=1; shift ;;
 		--no-package) DO_PACKAGE=0; shift ;;
+		--no-gendist) DO_GENDIST=0; shift ;;
 		--bin-out)    BIN_OUT="$2"; shift 2 ;;
 		--gui-out)    GUI_OUT="$2"; shift 2 ;;
 		-h|--help)    sed -n '2,56p' "$0"; exit 0 ;;
@@ -185,6 +195,14 @@ for f in irixscsitb.c toolbox.c gui_motif.c version.c irix.c \
 	cp "$REPO/$f" "$STAGE/$f"
 done
 echo "build output lands here" > "$STAGE/out/README"
+if [ "$DO_GENDIST" = 1 ]; then
+	# The inst product description, version-stamped for THIS flavor. The
+	# numeric inst version derives from --version (or a date stamp for
+	# version-less CI binary builds).
+	DISTVER=$(dist_version_from "${VERSION:-$(date -u +%Y-%m-%d-%H-%M)}")
+	stage_inst_inputs "$FLAVOR" "$DISTVER" "$STAGE"
+	mkdir -p "$STAGE/out/inst"
+fi
 
 # ---- 2. build the work disk ----------------------------------------------------
 # 64 MB EFS, 16 heads x 63 sectors (the geometry the IRIS emulator models).
@@ -271,6 +289,30 @@ ser_send "cp irixscsitb /mnt/out/$CLI_NAME && echo IRIXTB-'CLIOUT'-OK"
 ser_wait "IRIXTB-CLIOUT-OK" 60 || { echo "CLI copy-out failed:" >&2; tail -10 "$CONSOLE" >&2; exit 1; }
 ser_send "(test -f scsitbgui && cp scsitbgui /mnt/out/$GUI_NAME); echo IRIXTB-'GUIOUT'-DONE"
 ser_wait "IRIXTB-GUIOUT-DONE" 60 || true
+
+# ---- 5b. package with the guest's OWN gendist ---------------------------------------
+# The OS that built the binaries also packages them: its native gendist emits
+# a Software Manager product in its own inst format (5.3-format from the 5.3
+# guest — readable by every inst 5.3-6.5 — and 6.5-format from 6.5).
+if [ "$DO_GENDIST" = 1 ]; then
+	echo ">>> packaging with the guest's own gendist"
+	ser_send "test -x /usr/sbin/gendist && echo PK-'TOOL'-YES || echo PK-'TOOL'-NO"
+	if ser_wait "PK-TOOL-YES" 20; then
+		ser_send "rm -rf /tmp/pk && mkdir /tmp/pk /tmp/pk/bin /tmp/pk/dist && cp /mnt/irixscsitb.spec /mnt/irixscsitb.idb /tmp/pk && cp irixscsitb /tmp/pk/bin/ && (test -f scsitbgui && cp scsitbgui /tmp/pk/bin/) ; echo PK-'STAGE'-OK"
+		ser_wait "PK-STAGE-OK" 60 || { echo "gendist staging failed:" >&2; tail -10 "$CONSOLE" >&2; exit 1; }
+		# idb filter: drop the GUI line when no GUI was built (an image
+		# without Motif legitimately has none). Plain grep — 5.3's old awk
+		# can't be trusted with system().
+		ser_send "cd /tmp/pk && (test -f bin/scsitbgui && cp irixscsitb.idb idb.f || grep -v scsitbgui irixscsitb.idb > idb.f) && gendist -verbose -sbase /tmp/pk -idb /tmp/pk/idb.f -spec /tmp/pk/irixscsitb.spec -dist /tmp/pk/dist -all && cp dist/* /mnt/out/inst/ && cd /tmp/bsbuild && echo PK-'GEN'-OK || echo PK-'GEN'-FAIL"
+		ser_wait_long "PK-GEN-OK" 2 "gendist" || { tail -20 "$CONSOLE" >&2; exit 1; }
+	else
+		echo ">>> WARNING: guest has no /usr/sbin/gendist (inst_dev.sw not installed);"
+		echo ">>>          skipping the Software Manager product for $FLAVOR."
+		echo ">>>          scripts/iris-gendist.sh can provision it from the IDO CD."
+		DO_GENDIST=0
+	fi
+fi
+
 ser_send "cd / && umount /mnt && sync && echo IRIXTB-'XFER'-OK"
 ser_wait "IRIXTB-XFER-OK" 90 || { echo "umount/sync failed:" >&2; tail -10 "$CONSOLE" >&2; exit 1; }
 
@@ -287,6 +329,16 @@ if "$RB" ls "$HDA@1" /out 2>/dev/null | grep -q "$GUI_NAME"; then
 	"$RB" -q get --force "$HDA@1" "/out/$GUI_NAME" "$OUTDIR/$GUI_NAME"
 	GUI_BUILT=1
 fi
+if [ "$DO_GENDIST" = 1 ]; then
+	case "$FLAVOR" in o32) INST_OUT="$OUTDIR/inst53" ;; *) INST_OUT="$OUTDIR/inst65" ;; esac
+	mkdir -p "$INST_OUT"
+	for f in irixscsitb irixscsitb.idb irixscsitb.sw; do
+		"$RB" -q get --force "$HDA@1" "/out/inst/$f" "$INST_OUT/$f"
+		[ -s "$INST_OUT/$f" ] || die "gendist product file $f missing from the work disk (see $CONSOLE)"
+	done
+	echo ">>> Software Manager product ($FLAVOR): $INST_OUT"
+fi
+
 echo ">>> built:"
 file "$OUTDIR/$CLI_NAME" || true
 [ "$GUI_BUILT" = 1 ] && file "$OUTDIR/$GUI_NAME" || echo "    (GUI not built on this image - CLI is fine)"
@@ -295,13 +347,14 @@ if [ -n "$BIN_OUT" ]; then cp "$OUTDIR/$CLI_NAME" "$BIN_OUT"; echo ">>> CLI bina
 if [ -n "$GUI_OUT" ] && [ "$GUI_BUILT" = 1 ]; then cp "$OUTDIR/$GUI_NAME" "$GUI_OUT"; echo ">>> GUI binary: $GUI_OUT"; fi
 
 # ---- 7. package (o32 only, unless suppressed) --------------------------------------
-# Single-flavor convenience packaging: media with a dist53/ directory only.
+# Single-flavor convenience packaging: media with a dist53/ entry only.
 # Full dual-flavor media come from package-dist.sh after both builds.
 if [ "$DO_PACKAGE" = 1 ]; then
 	echo ">>> packaging distributable artifacts"
 	set -- --version "$VERSION" --outdir "$OUTDIR" --rb-cli "$RB" \
-	       --extra "$REPO/README.md" --dist53-bin "$OUTDIR/$CLI_NAME"
-	[ "$GUI_BUILT" = 1 ] && set -- "$@" --dist53-gui "$OUTDIR/$GUI_NAME"
+	       --extra "$REPO/README.md" --bin53 "$OUTDIR/$CLI_NAME"
+	[ "$GUI_BUILT" = 1 ] && set -- "$@" --gui53 "$OUTDIR/$GUI_NAME"
+	[ "$DO_GENDIST" = 1 ] && set -- "$@" --inst53-dir "$OUTDIR/inst53"
 	"$REPO/scripts/package.sh" "$@"
 fi
 

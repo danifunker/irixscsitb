@@ -90,19 +90,19 @@ makes easy — for the IRIS emulator or real SGI/BlueSCSI hardware:
 
 | Artifact | What it is | How to use |
 |----------|-----------|------------|
-| `irixscsitb-*.tar.gz` | `dist53/` + `dist65/` trees + READMEs | Easiest with the IRIS emulator's built-in NFS server: point `[nfs] shared_dir` at a folder, drop the extracted tree in, then inside IRIX `mount 192.168.0.1:/ /mnt && cp /mnt/*/dist53/irixscsitb /usr/sbin/`. Also works over ftp/rcp. Carries the executable bits. |
-| `irixscsitb-*.tardist` | **Software Manager package** | Download onto IRIX, open with swmgr — or `inst -f irixscsitb-*.tardist`. Installs `irixscsitb.sw.o32` by default (5.3–6.5); pick `.sw.n32` instead on 6.x. |
-| `irixscsitb-*.iso` | IRIX EFS CD-ROM image (volume `SCSITB`) | Attach as a CD in IRIS (`cdrom = true`) or burn it. mediad mounts it at `/CDROM`; then **`inst -f /CDROM/dist`** (Software Manager) — or copy from `dist53/`/`dist65/` and `chmod +x`. |
-| `irixscsitb-*.hda` | SGI EFS hard-disk image (dvh + EFS root) | Attach as a SCSI disk in IRIS (`cdrom = false`). Mount the EFS root, copy from `dist53/` or `dist65/`, `chmod +x`. |
+| `irixscsitb-*-53.tardist` | **Software Manager package (o32)** — built *and packaged* on IRIX 5.3, readable by every inst 5.3–6.5 | Download onto IRIX, open with swmgr — or `inst -f irixscsitb-*-53.tardist`. |
+| `irixscsitb-*-65.tardist` | **Software Manager package (n32)** — built and packaged on IRIX 6.5, 6.x only | Same, on 6.x. |
+| `irixscsitb-*.iso.gz` | IRIX EFS CD-ROM image (volume `SCSITB`), gzipped | `gunzip`, then attach as a CD in IRIS (`cdrom = true`) or burn it. mediad mounts it at `/CDROM`; then **`inst -f /CDROM/dist53`** (or `dist65` on 6.x). |
+| `irixscsitb-*.hda.gz` | SGI EFS hard-disk image (dvh + EFS root), gzipped | `gunzip`, attach as a SCSI disk in IRIS (`cdrom = false`), mount, `inst -f` from the mounted `dist53`/`dist65`. |
+| `irixscsitb-*.tar.gz` | the media tree + raw binaries (`bin53/`, `bin65/`, executable bits set) | Easiest with the IRIS emulator's built-in NFS server: drop the extracted tree in a `[nfs] shared_dir` folder, then inside IRIX `mount 192.168.0.1:/ /mnt && cp /mnt/*/bin53/irixscsitb /usr/sbin/`. |
 
-Every medium carries the same two directories — **`dist53/`** holds the o32
-binaries (run on anything from IRIX 5.3 through 6.5) and **`dist65/`** the
-faster n32 binaries (IRIX 6.x only) — plus a `README-dist.txt` saying exactly
-that, and a **`dist/`** directory that is a real `inst` distribution
-(generated natively by IRIX 5.3's own `gendist`, so every inst from 5.3 to
-6.5 reads it — verified installing on both). The `.iso`/`.hda` store plain
-files mode 0644, so `chmod +x` after copying off; the `.tar.gz` already
-carries the executable bits.
+Every medium carries **`/dist53`** and **`/dist65`** — each a complete
+Software Manager distribution **packaged by the OS that built it** (the 5.3
+guest's own `gendist` packages the o32 build in the 5.3 product format that
+every inst through 6.5 reads; the 6.5 guest packages its n32 build) — plus a
+`README-dist.txt` saying exactly that. The images ship gzipped because they
+are mostly empty space; the raw `.iso`/`.hda` also come out of a local build
+for direct IRIS attachment.
 
 ## CI: built natively on IRIX, inside the IRIS emulator
 

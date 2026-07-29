@@ -1,26 +1,29 @@
 # inst/ — the IRIX Software Manager product description
 
-These two files describe the `irixscsitb` product that IRIX's `inst`(1M) /
-Software Manager (swmgr) installs. `scripts/iris-gendist.sh` ships them into
-an IRIX 5.3 guest and runs the native **`gendist`** there (5.3-format product
-files read by every inst from 5.3 through 6.5), producing the classic trio:
+These two templates describe the `irixscsitb` product that IRIX's `inst`(1M)
+/ Software Manager (swmgr) installs. **Each OS packages its own build**:
+during the build session, `scripts/iris-build.sh` runs the guest's native
+`gendist` over these files, so the 5.3 guest emits a 5.3-format product for
+its o32 binaries (readable by every inst from 5.3 through 6.5) and the 6.5
+guest a 6.5-format product for its n32 binaries. The two land on the media as
+`/dist53` and `/dist65` — `inst -f /CDROM/dist53` (or `dist65`) — and as the
+per-flavor `.tardist` release artifacts.
 
-    irixscsitb  irixscsitb.idb  irixscsitb.sw
-
-- `irixscsitb.spec` — product → image → subsystem tree. `@VERSION@` is
-  replaced with a numeric version derived from the release version (digits,
-  first 10 — date-stamped versions give sane inst upgrade ordering).
-  `sw.o32` is the default-install subsystem (runs on 5.3–6.5); `sw.n32`
-  (6.x-only, faster) is opt-in — both install the same paths, so inst treats
-  selecting both as a conflict and makes the user pick one, which is the
-  intended either/or.
+- `irixscsitb.spec` — product → image → one subsystem per product.
+  Placeholders filled at staging time (`stage_inst_inputs` in
+  `scripts/ci-lib.sh`): `@VERSION@` (numeric, derived from the release
+  version — date-stamped versions give sane inst upgrade ordering),
+  `@SUBSYS@` (`o32`/`n32`), `@ABI_DESC@`. Both flavors' products share the
+  product name, so installing the other flavor later simply replaces it.
 - `irixscsitb.idb` — the file list, **sorted by destination path** (gendist
-  requires it). Source paths are relative to the gendist `-sbase`, matching
-  the `dist53/` / `dist65/` layout the work disk carries. Lines whose source
-  binary wasn't built (e.g. a GUI-less image) are filtered out at staging
-  time by iris-gendist.sh.
+  requires it), sources relative to the gendist `-sbase` under `bin/`. Lines
+  whose source binary wasn't built (a Motif-less image has no GUI) are
+  filtered in-guest before gendist runs.
 
-The tools come from the **`inst_dev.sw`** subsystem ("Software Packager") of
-the IRIS Development Option 5.3 CD; iris-gendist.sh auto-installs it into the
-guest's copy-on-write overlay when missing (see `IRIX53_IDO_ISO` in
-ci/local.conf.example).
+`gendist` ships in the **`inst_dev.sw`** subsystem ("Software Packager"). If
+a 5.3 image lacks it, `scripts/iris-gendist.sh` can install it into the
+guest's copy-on-write overlay from the IRIS Development Option 5.3 CD
+(`IRIX53_IDO_ISO` in ci/local.conf) — that scripted session never quits
+inst, never resolves conflicts, and never removes anything: after the
+install reports success, inst is simply suspended and left behind in the
+disposable overlay.

@@ -1,46 +1,37 @@
 #!/bin/sh
-# Package the IRIX irixscsitb binary into distributable artifacts with rb-cli
-# (https://github.com/danifunker/rusty-backup). Produces three things a user can
-# drop straight into the IRIS emulator (or onto real SGI/BlueSCSI hardware):
+# Package the IRIX irixscsitb build products into distributable artifacts with
+# rb-cli (https://github.com/danifunker/rusty-backup). Produces, per release:
 #
-#   1. .iso  - IRIX EFS CD-ROM image: an SGI volume header + partition table with
-#              the EFS filesystem in slot 7 (typed SYSV, the IRIX EFS-CD
-#              convention) and CD geometry. In IRIS: attach as a `cdrom = true`
-#              SCSI device (or drop into a `discs = [...]` changer). On IRIX:
-#              `mount -t efs -o ro /dev/dsk/dks0d<N>s7 /CDROM`.
-#   2. .hda  - SGI EFS hard-disk image: dvh volume header + partition table
-#              wrapping an EFS root partition (slot 0). In IRIS: attach as a
-#              `cdrom = false` SCSI device. Recognised by IRIX `fx` / `prtvtoc`.
-#   3. .tar.gz - a plain gzip tarball of the binaries + README. The friendliest
-#              vector now that IRIS has a built-in NFS server: point `[nfs]
-#              shared_dir` at a folder, drop this tarball's contents in, mount
-#              `192.168.0.1:/` inside IRIX and untar. No image to build at all.
+#   irixscsitb-VER.iso.gz    IRIX EFS CD-ROM image, gzipped for distribution
+#   irixscsitb-VER.hda.gz    SGI EFS hard-disk image, gzipped (mostly empty
+#                            space compresses to almost nothing)
+#   irixscsitb-VER.tar.gz    the same tree + raw binaries, executable bits set
+#   irixscsitb-VER-53.tardist  Software Manager package (o32, 5.3 format)
+#   irixscsitb-VER-65.tardist  Software Manager package (n32, 6.5 format)
 #
-# The .iso and .hda are created + populated + fsck'd + round-trip-verified.
+# The raw .iso/.hda stay in --outdir next to the .gz for local use (attach
+# directly in IRIS; `gunzip` before writing to real media).
 #
-# rb-cli grammar note: this targets CURRENT rb-cli, where the CD builder is
-# `optical new sgi-efs` and the HDD builder is `new hd sgi-efs`. The old
-# top-level `new-sgi-cdrom` / `new-sgi-hdd` / `new --fs efs` verbs were renamed.
-#
-# Both flavors ride on every medium, in per-flavor directories so nobody has
-# to guess which binary they are looking at:
-#   /dist53/irixscsitb [+ scsitbgui]   o32/mips2 — runs on IRIX 5.3 through 6.5
-#   /dist65/irixscsitb [+ scsitbgui]   n32/mips3 — IRIX 6.x only, faster
-#   /README-dist.txt                   generated: which directory is which
-# The .tar.gz carries the same dist53/ + dist65/ tree.
+# MEDIA LAYOUT — one directory per flavor, each packaged BY ITS OWN OS
+# (iris-build.sh runs the guest's native gendist in the same session):
+#   /dist53/   inst distribution from the IRIX 5.3 guest (o32; the 5.3-format
+#              product every inst 5.3-6.5 reads):  inst -f /CDROM/dist53
+#   /dist65/   inst distribution from the IRIX 6.5 guest (n32, 6.5 format):
+#              inst -f /CDROM/dist65
+#   /README-dist.txt  generated: which directory is which
+# When a flavor has no inst product (guest without the Software Packager),
+# its raw binaries take the directory's place instead — copy off + chmod +x.
 #
 # Usage:
-#   scripts/package.sh --dist53-bin PATH --dist65-bin PATH --version VER [options]
+#   scripts/package.sh --version VER [options]
 #
 # Options (defaults in brackets):
-#   --dist53-bin PATH  o32 CLI  -> dist53/irixscsitb   (at least one of the
-#   --dist65-bin PATH  n32 CLI  -> dist65/irixscsitb    two CLIs is required)
-#   --dist53-gui PATH  o32 GUI  -> dist53/scsitbgui    (optional)
-#   --dist65-gui PATH  n32 GUI  -> dist65/scsitbgui    (optional)
-#   --inst-dir DIR    gendist product trio (irixscsitb, .idb, .sw) from
-#                     scripts/iris-gendist.sh -> media /dist (Software
-#                     Manager-installable: inst -f /CDROM/dist) + a
-#                     irixscsitb-VER.tardist artifact (plain tar swmgr opens)
+#   --inst53-dir DIR  o32 product trio (irixscsitb, .idb, .sw) -> /dist53
+#   --inst65-dir DIR  n32 product trio -> /dist65
+#   --bin53 PATH      o32 CLI: tarball bin53/ (+ /dist53 fallback w/o inst)
+#   --gui53 PATH      o32 GUI: tarball bin53/ (+ fallback)
+#   --bin65 PATH      n32 CLI: tarball bin65/ (+ /dist65 fallback w/o inst)
+#   --gui65 PATH      n32 GUI: tarball bin65/ (+ fallback)
 #   --version VER     version string used in output filenames (required)
 #   --outdir DIR      where to write the artifacts       [dist]
 #   --rb-cli PATH     rb-cli binary    [$RB_CLI, then `rb-cli` on PATH]
@@ -53,13 +44,15 @@
 #   --no-iso          skip the .iso
 #   --no-hda          skip the .hda
 #   --no-tar          skip the .tar.gz
+#   --no-gzip         skip gzipping the .iso/.hda
 set -eu
 
 BIN53=""
 GUI53=""
 BIN65=""
 GUI65=""
-INST_DIR=""
+INST53=""
+INST65=""
 VERSION=""
 OUTDIR="dist"
 RB="${RB_CLI:-rb-cli}"
@@ -72,16 +65,18 @@ EXTRAS=""
 DO_ISO=1
 DO_HDA=1
 DO_TAR=1
+DO_GZIP=1
 
 die() { echo "package: $*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--dist53-bin) BIN53="$2"; shift 2 ;;
-		--dist53-gui) GUI53="$2"; shift 2 ;;
-		--dist65-bin) BIN65="$2"; shift 2 ;;
-		--dist65-gui) GUI65="$2"; shift 2 ;;
-		--inst-dir)  INST_DIR="$2"; shift 2 ;;
+		--inst53-dir) INST53="$2"; shift 2 ;;
+		--inst65-dir) INST65="$2"; shift 2 ;;
+		--bin53)    BIN53="$2"; shift 2 ;;
+		--gui53)    GUI53="$2"; shift 2 ;;
+		--bin65)    BIN65="$2"; shift 2 ;;
+		--gui65)    GUI65="$2"; shift 2 ;;
 		--version)  VERSION="$2"; shift 2 ;;
 		--outdir)   OUTDIR="$2"; shift 2 ;;
 		--rb-cli)   RB="$2"; shift 2 ;;
@@ -94,33 +89,33 @@ while [ $# -gt 0 ]; do
 		--no-iso)   DO_ISO=0; shift ;;
 		--no-hda)   DO_HDA=0; shift ;;
 		--no-tar)   DO_TAR=0; shift ;;
-		-h|--help)  sed -n '2,50p' "$0"; exit 0 ;;
+		--no-gzip)  DO_GZIP=0; shift ;;
+		-h|--help)  sed -n '2,52p' "$0"; exit 0 ;;
 		*)          die "unknown option: $1" ;;
 	esac
 done
 
 [ -n "$VERSION" ] || die "missing --version"
-[ -n "$BIN53" ] || [ -n "$BIN65" ] || die "need --dist53-bin and/or --dist65-bin"
 for f in "$BIN53" "$GUI53" "$BIN65" "$GUI65"; do
 	[ -z "$f" ] || [ -f "$f" ] || die "not found: $f"
 done
-[ -z "$GUI53" ] || [ -n "$BIN53" ] || die "--dist53-gui without --dist53-bin"
-[ -z "$GUI65" ] || [ -n "$BIN65" ] || die "--dist65-gui without --dist65-bin"
-if [ -n "$INST_DIR" ]; then
+for d in "$INST53" "$INST65"; do
+	[ -z "$d" ] && continue
 	for f in irixscsitb irixscsitb.idb irixscsitb.sw; do
-		[ -f "$INST_DIR/$f" ] || die "--inst-dir is missing $f (run scripts/iris-gendist.sh first)"
+		[ -f "$d/$f" ] || die "inst dir $d is missing $f (iris-build.sh emits it unless --no-gendist)"
 	done
-fi
-command -v "$RB" >/dev/null 2>&1 || [ -x "$RB" ] || die "rb-cli not found: $RB"
+done
+[ -n "$INST53$BIN53$INST65$BIN65" ] || die "nothing to package: pass --inst53-dir/--bin53 and/or --inst65-dir/--bin65"
 
 # Fail early (and clearly) if this rb-cli predates the current builder grammar.
+command -v "$RB" >/dev/null 2>&1 || [ -x "$RB" ] || die "rb-cli not found: $RB"
 if [ "$DO_ISO" = 1 ]; then
 	"$RB" optical new sgi-efs --help >/dev/null 2>&1 || \
-		die "this rb-cli lacks 'optical new sgi-efs' (update rb-cli; the old 'new-sgi-cdrom' verb was renamed)"
+		die "this rb-cli lacks 'optical new sgi-efs' (update rb-cli)"
 fi
 if [ "$DO_HDA" = 1 ]; then
 	"$RB" new hd sgi-efs --help >/dev/null 2>&1 || \
-		die "this rb-cli lacks 'new hd sgi-efs' (update rb-cli; the old 'new-sgi-hdd' verb was renamed)"
+		die "this rb-cli lacks 'new hd sgi-efs' (update rb-cli)"
 fi
 
 mkdir -p "$OUTDIR"
@@ -136,33 +131,45 @@ README_DIST="$OUTDIR/.README-dist.$$"
 {
 	echo "irixscsitb $VERSION - toolbox for BlueSCSI / ZuluSCSI on SGI IRIX"
 	echo ""
-	[ -z "$BIN53" ] || echo "dist53/   o32 (mips2) binaries: run on IRIX 5.3 through 6.5"
-	[ -z "$BIN65" ] || echo "dist65/   n32 (mips3) binaries: IRIX 6.x ONLY, faster"
-	echo ""
-	echo "Each directory holds irixscsitb (the CLI) and, where the build had"
-	echo "Motif, scsitbgui (the GUI). EFS media store files mode 0644: after"
-	echo "copying off the CD/disk, chmod +x the binaries. The .tar.gz carries"
-	echo "the executable bits already."
-	if [ -n "$INST_DIR" ]; then
-		echo ""
-		echo "PREFER THE SOFTWARE MANAGER? dist/ is a real inst distribution:"
-		echo "    inst -f /CDROM/dist        (or Software Manager -> /CDROM/dist)"
-		echo "installs irixscsitb.sw.o32 by default (5.3-6.5); select"
-		echo "irixscsitb.sw.n32 instead on 6.x for the faster build."
+	if [ -n "$INST53" ]; then
+		echo "dist53/   Software Manager distribution, built and packaged ON"
+		echo "          IRIX 5.3 (o32 - runs on 5.3 through 6.5):"
+		echo "              inst -f /CDROM/dist53     (or swmgr)"
+	elif [ -n "$BIN53" ]; then
+		echo "dist53/   o32 binaries (run on IRIX 5.3-6.5): copy off + chmod +x"
 	fi
+	if [ -n "$INST65" ]; then
+		echo "dist65/   Software Manager distribution, built and packaged ON"
+		echo "          IRIX 6.5 (n32 - IRIX 6.x only, faster):"
+		echo "              inst -f /CDROM/dist65     (or swmgr)"
+	elif [ -n "$BIN65" ]; then
+		echo "dist65/   n32 binaries (IRIX 6.x only): copy off + chmod +x"
+	fi
+	echo ""
+	echo "Each product installs /usr/sbin/irixscsitb (CLI) and, where the"
+	echo "build had Motif, /usr/sbin/scsitbgui (GUI). Installing the other"
+	echo "flavor's product later simply replaces it."
 } > "$README_DIST"
 
 PAYLOAD=""
 add_payload() { PAYLOAD="$PAYLOAD$1|$2
 "; }
-[ -z "$BIN53" ] || add_payload "$BIN53" "/dist53/irixscsitb"
-[ -z "$GUI53" ] || add_payload "$GUI53" "/dist53/scsitbgui"
-[ -z "$BIN65" ] || add_payload "$BIN65" "/dist65/irixscsitb"
-[ -z "$GUI65" ] || add_payload "$GUI65" "/dist65/scsitbgui"
-if [ -n "$INST_DIR" ]; then
-	add_payload "$INST_DIR/irixscsitb" "/dist/irixscsitb"
-	add_payload "$INST_DIR/irixscsitb.idb" "/dist/irixscsitb.idb"
-	add_payload "$INST_DIR/irixscsitb.sw" "/dist/irixscsitb.sw"
+# dist53: the inst product, or raw binaries when no product was generated.
+if [ -n "$INST53" ]; then
+	for f in irixscsitb irixscsitb.idb irixscsitb.sw; do
+		add_payload "$INST53/$f" "/dist53/$f"
+	done
+elif [ -n "$BIN53" ]; then
+	add_payload "$BIN53" "/dist53/irixscsitb"
+	[ -z "$GUI53" ] || add_payload "$GUI53" "/dist53/scsitbgui"
+fi
+if [ -n "$INST65" ]; then
+	for f in irixscsitb irixscsitb.idb irixscsitb.sw; do
+		add_payload "$INST65/$f" "/dist65/$f"
+	done
+elif [ -n "$BIN65" ]; then
+	add_payload "$BIN65" "/dist65/irixscsitb"
+	[ -z "$GUI65" ] || add_payload "$GUI65" "/dist65/scsitbgui"
 fi
 add_payload "$README_DIST" "/README-dist.txt"
 for f in $EXTRAS; do
@@ -174,9 +181,8 @@ done
 # (slot 7) and the HDD (slot 0) — rb-cli maps @1 to the sole EFS partition.
 put_payload() {
 	ref="$1"
-	[ -z "$BIN53" ] || "$RB" mkdir "$ref" /dist53
-	[ -z "$BIN65" ] || "$RB" mkdir "$ref" /dist65
-	[ -z "$INST_DIR" ] || "$RB" mkdir "$ref" /dist
+	[ -z "$INST53$BIN53" ] || "$RB" mkdir "$ref" /dist53
+	[ -z "$INST65$BIN65" ] || "$RB" mkdir "$ref" /dist65
 	printf '%s' "$PAYLOAD" | while IFS='|' read -r host guest; do
 		[ -n "$host" ] || continue
 		"$RB" put "$ref" "$host" "$guest"
@@ -221,9 +227,7 @@ if [ "$DO_TAR" = 1 ]; then
 	stage="$(mktemp -d)"
 	top="irixscsitb-$VERSION"
 	mkdir -p "$stage/$top"
-	# Same dist53/ + dist65/ tree as the media, with the executable bits set,
-	# so `tar xf` yields ready-to-run binaries (the EFS images land 0644 —
-	# chmod +x after copying off).
+	# The media tree verbatim...
 	printf '%s' "$PAYLOAD" | while IFS='|' read -r host guest; do
 		[ -n "$host" ] || continue
 		case "$guest" in
@@ -232,26 +236,42 @@ if [ "$DO_TAR" = 1 ]; then
 		esac
 		mkdir -p "$stage/$(dirname "$dest")"
 		cp "$host" "$stage/$dest"
-		case "$guest" in /dist*/*) chmod +x "$stage/$dest" ;; esac
+	done
+	# ...plus the raw binaries with executable bits, for NFS/direct-copy use.
+	for pair in "bin53:$BIN53" "bin53:$GUI53" "bin65:$BIN65" "bin65:$GUI65"; do
+		d=${pair%%:*}; src=${pair#*:}
+		[ -n "$src" ] || continue
+		mkdir -p "$stage/$top/$d"
+		case "$src" in *scsitbgui*) n=scsitbgui ;; *) n=irixscsitb ;; esac
+		cp "$src" "$stage/$top/$d/$n"
+		chmod +x "$stage/$top/$d/$n"
 	done
 	tar czf "$TARBALL" -C "$stage" "$top"
 	rm -rf "$stage"
 	echo "    contents:"; tar tzf "$TARBALL" | sed 's/^/      /'
 fi
 
-# The tardist: a plain tar of the product trio, the classic "download and
-# open with Software Manager" vector (swmgr/inst read it directly).
-if [ -n "$INST_DIR" ]; then
-	TARDIST="$OUTDIR/irixscsitb-$VERSION.tardist"
-	echo ">>> tardist: $TARDIST"
-	( cd "$INST_DIR" && tar cf "$TARDIST" irixscsitb irixscsitb.idb irixscsitb.sw )
+# Per-flavor tardists: a plain tar of the product trio — the classic
+# "download and open with Software Manager" vector.
+if [ -n "$INST53" ]; then
+	echo ">>> tardist (o32/5.3): $OUTDIR/irixscsitb-$VERSION-53.tardist"
+	( cd "$INST53" && tar cf "$OUTDIR/irixscsitb-$VERSION-53.tardist" irixscsitb irixscsitb.idb irixscsitb.sw )
+fi
+if [ -n "$INST65" ]; then
+	echo ">>> tardist (n32/6.5): $OUTDIR/irixscsitb-$VERSION-65.tardist"
+	( cd "$INST65" && tar cf "$OUTDIR/irixscsitb-$VERSION-65.tardist" irixscsitb irixscsitb.idb irixscsitb.sw )
+fi
+
+# Distribution compression: the images are mostly empty space. The raw files
+# stay for direct local use (IRIS attaches them as-is).
+if [ "$DO_GZIP" = 1 ]; then
+	[ "$DO_ISO" = 1 ] && { echo ">>> gzip: $ISO_IMG.gz"; gzip -9 -c "$ISO_IMG" > "$ISO_IMG.gz"; }
+	[ "$DO_HDA" = 1 ] && { echo ">>> gzip: $HDD_IMG.gz"; gzip -9 -c "$HDD_IMG" > "$HDD_IMG.gz"; }
 fi
 
 rm -f "$README_DIST"
 echo
 echo "Packaged irixscsitb $VERSION:"
-ls -la "$OUTDIR"/irixscsitb-"$VERSION".* 2>/dev/null || true
-echo "Note: EFS stores Unix mode bits - the .iso/.hda land the binaries 0644, so"
-echo "on IRIX run 'chmod +x' after copying them off the media (the .tar.gz"
-echo "already carries the executable bits). See README-dist.txt on the media"
-echo "for which directory (dist53/dist65) fits which IRIX."
+ls -la "$OUTDIR"/irixscsitb-"$VERSION"* 2>/dev/null || true
+echo "Note: the .gz images are the distribution artifacts (gunzip before"
+echo "writing to real media; IRIS can attach the raw .iso/.hda directly)."

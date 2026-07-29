@@ -5,15 +5,14 @@
 # add the flag" dance used to live in both).
 #
 # Expects in --dir (produced by iris-build.sh --outdir / downloaded artifacts):
-#   irixscsitb-o32              images + tarball (the portable 5.3-6.5 binary)
-#   scsitbgui-o32               optional — images + tarball
-#   irixscsitb-n32              optional — tarball only
-#   scsitbgui-n32               optional — tarball only
-# Writes irixscsitb-<version>.{iso,hda,tar.gz} into the same directory.
-#
-# When the o32 pair is absent (an n32-only setup, e.g. BUILD_O32=0), the n32
-# pair takes its place in the images + tarball — with a loud note, since that
-# binary only runs on IRIX 6.x. At least one CLI binary is required.
+#   irixscsitb-o32 / scsitbgui-o32   raw o32 binaries (tarball bin53/)
+#   irixscsitb-n32 / scsitbgui-n32   raw n32 binaries (tarball bin65/)
+#   inst53/ / inst65/                per-OS gendist product trios -> media
+#                                    /dist53 + /dist65 and the .tardists
+# Writes irixscsitb-<version>.{iso,hda,tar.gz,iso.gz,hda.gz,-53.tardist,
+# -65.tardist} into the same directory. A flavor with binaries but no inst
+# product falls back to raw binaries in its /distXX directory; a wholly
+# absent flavor is simply omitted. At least one flavor is required.
 #
 # Usage:
 #   scripts/package-dist.sh --version V --dir DIR [--rb-cli PATH]
@@ -40,7 +39,7 @@ done
 [ -n "$DIR" ] || die "missing --dir"
 DIR=$(cd "$DIR" 2>/dev/null && pwd) || die "dist dir not found: $DIR"
 
-# Every medium carries a dist53/ (o32) and/or dist65/ (n32) directory —
+# Every medium carries a dist53/ (o32) and/or dist65/ (n32) entry —
 # whichever flavors were actually built.
 [ -f "$DIR/irixscsitb-o32" ] || [ -f "$DIR/irixscsitb-n32" ] \
 	|| die "no irixscsitb-o32 or irixscsitb-n32 in $DIR — nothing to package"
@@ -48,12 +47,13 @@ DIR=$(cd "$DIR" 2>/dev/null && pwd) || die "dist dir not found: $DIR"
 	|| echo "package-dist: NOTE: no o32 build — the media get dist65/ only, and those binaries run on IRIX 6.x ONLY" >&2
 
 set -- --version "$VERSION" --outdir "$DIR" --rb-cli "$RB" --extra "$REPO/README.md"
-[ -f "$DIR/irixscsitb-o32" ] && set -- "$@" --dist53-bin "$DIR/irixscsitb-o32"
-[ -f "$DIR/scsitbgui-o32" ]  && set -- "$@" --dist53-gui "$DIR/scsitbgui-o32"
-[ -f "$DIR/irixscsitb-n32" ] && set -- "$@" --dist65-bin "$DIR/irixscsitb-n32"
-[ -f "$DIR/scsitbgui-n32" ]  && set -- "$@" --dist65-gui "$DIR/scsitbgui-n32"
-# A gendist product trio in DIR/inst (scripts/iris-gendist.sh) rides along as
-# the Software Manager-installable /dist + the .tardist artifact.
-[ -f "$DIR/inst/irixscsitb.sw" ] && set -- "$@" --inst-dir "$DIR/inst"
+[ -f "$DIR/irixscsitb-o32" ] && set -- "$@" --bin53 "$DIR/irixscsitb-o32"
+[ -f "$DIR/scsitbgui-o32" ]  && set -- "$@" --gui53 "$DIR/scsitbgui-o32"
+[ -f "$DIR/irixscsitb-n32" ] && set -- "$@" --bin65 "$DIR/irixscsitb-n32"
+[ -f "$DIR/scsitbgui-n32" ]  && set -- "$@" --gui65 "$DIR/scsitbgui-n32"
+# Per-OS gendist products (emitted by iris-build.sh in the same guest session
+# that compiled them) become the Software Manager dists + .tardists.
+[ -f "$DIR/inst53/irixscsitb.sw" ] && set -- "$@" --inst53-dir "$DIR/inst53"
+[ -f "$DIR/inst65/irixscsitb.sw" ] && set -- "$@" --inst65-dir "$DIR/inst65"
 
 exec "$REPO/scripts/package.sh" "$@"

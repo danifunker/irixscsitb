@@ -6,8 +6,9 @@
 #
 # Attaches whatever of the canonical set exists in --dist:
 #   irixscsitb-o32  scsitbgui-o32  irixscsitb-n32  scsitbgui-n32
-#   irixscsitb-<version>.tardist                   (when the inst dist built)
-#   irixscsitb-<version>.iso  .hda  .tar.gz        (the three are required)
+#   irixscsitb-<version>-53.tardist  -65.tardist   (per-OS SWM packages)
+#   irixscsitb-<version>.iso.gz  .hda.gz  .tar.gz  (the three are required;
+#   the images ship gzipped — mostly empty space — raw stays local)
 #
 # Usage:
 #   scripts/publish-release.sh --version V --dist DIR
@@ -42,14 +43,14 @@ done
 DIST=$(cd "$DIST" 2>/dev/null && pwd) || die "dist dir not found: $DIST"
 TAG="v$VERSION"
 
-# Canonical artifact set: optional binaries + tardist first, then the
-# required images.
+# Canonical artifact set: optional binaries + tardists first, then the
+# required (compressed) images.
 set --
 for f in irixscsitb-o32 scsitbgui-o32 irixscsitb-n32 scsitbgui-n32 \
-         "irixscsitb-$VERSION.tardist"; do
+         "irixscsitb-$VERSION-53.tardist" "irixscsitb-$VERSION-65.tardist"; do
 	[ -f "$DIST/$f" ] && set -- "$@" "$DIST/$f"
 done
-for f in "irixscsitb-$VERSION.iso" "irixscsitb-$VERSION.hda" "irixscsitb-$VERSION.tar.gz"; do
+for f in "irixscsitb-$VERSION.iso.gz" "irixscsitb-$VERSION.hda.gz" "irixscsitb-$VERSION.tar.gz"; do
 	[ -f "$DIST/$f" ] || die "missing $DIST/$f — run scripts/package-dist.sh first"
 	set -- "$@" "$DIST/$f"
 done

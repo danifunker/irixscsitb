@@ -86,26 +86,27 @@ exit* — a slow rewrite of exactly the file CI wants immutable.
 | Built-in NFS | both | NVRAM `eaddr` + an IP the NAT routes | fine for big trees; needs one-time PROM setup (see ci/iris-irix53.toml comments) |
 | Scratch volume | both | none | raw sectors + guest `dd`; `iris-ci put/get`; no filesystem — last resort |
 
-## The Software Manager distribution (inst/swmgr)
+## The Software Manager distributions (inst/swmgr)
 
-`scripts/iris-gendist.sh` produces a real `inst`-installable product —
-`irixscsitb` / `irixscsitb.idb` / `irixscsitb.sw`, subsystems `sw.o32`
-(default, 5.3–6.5) and `sw.n32` (opt-in, 6.x) — by running SGI's own
-**`gendist`** in the 5.3 guest (its old product format is readable by every
-inst through 6.5; verified installing on both 5.3 and 6.5, including the
-o32→n32 subsystem swap). The product description lives in
-`inst/irixscsitb.spec` + `inst/irixscsitb.idb`; packaging places the trio at
-`/dist` on the `.iso`/`.hda` (mediad + `inst -f /CDROM/dist` just work) and
-emits a standalone `.tardist`.
+**Each OS packages its own build.** In the same guest session that compiles,
+`iris-build.sh` runs the guest's native **`gendist`** over
+`inst/irixscsitb.spec` + `.idb` (templated per flavor by
+`scripts/ci-lib.sh`): the 5.3 guest emits a 5.3-format product for its o32
+binaries — the format every inst from 5.3 through 6.5 reads — and the 6.5
+guest a 6.5-format product for its n32 binaries. Packaging places them at
+`/dist53` and `/dist65` on the media (mediad + `inst -f /CDROM/dist53` just
+work) and emits per-flavor `.tardist` artifacts. `--no-gendist` (or
+`BUILD_INST=0`) skips it; a guest without gendist skips it with a warning.
 
-gendist ships in the **`inst_dev.sw`** subsystem ("Software Packager"), which
-dev images often carry only the books for. Set `IRIX53_IDO_ISO` in
-`ci/local.conf` to the IRIS Development Option 5.3 CD image and the script
-installs it into the guest's overlay automatically — including resolving
-inst's *quit-time* machine-incompatibility report with the explicit choices
-in `IDO_CONFLICT_CHOICES` (reviewed once, never guessed). All of it lands in
-the copy-on-write overlay; the boot image stays pristine, and the whole cold
-path from a fresh overlay is scripted and repeatable.
+gendist ships in the **`inst_dev.sw`** subsystem ("Software Packager"). If a
+5.3 image lacks it, set `IRIX53_IDO_ISO` in `ci/local.conf` and
+`scripts/iris-gendist.sh` provisions it into the guest's copy-on-write
+overlay via a scripted inst session that deliberately does the minimum:
+select, `go`, confirm "successful", then **suspend inst (Ctrl-Z)** and move
+on. It never quits inst, never resolves conflicts, and never removes
+anything — inst's quit path runs a machine-incompatibility check that can
+misfire under an emulated/headless hinv and demand removal of legitimately
+installed software. The boot image stays pristine throughout.
 
 ## Driving the guest: lessons baked into iris-build.sh + iris-gendist.sh
 
@@ -129,11 +130,16 @@ path from a fresh overlay is scripted and repeatable.
   `test -d X || mkdir X` on reused overlays.
 - **Driving `inst` needs prompt discipline**: `stty rows 1000` first (or its
   pagers eat your commands), synchronize on a fresh `Inst>` after every
-  selection (they stream progress for many seconds — fixed sleeps lose),
+  selection (they stream progress for many seconds — fixed sleeps lose), and
   take flow-control text from the serial *socket* capture, never the
-  write-buffered console log — and expect the machine-incompatibility check
-  to fire **at quit**, behind a `more?` pager, even when `conflicts` said
-  "No conflicts" moments before.
+  write-buffered console log.
+- **Never quit inst from automation.** Its quit path runs a
+  machine-incompatibility check (behind an un-scriptable pager) that can
+  demand removal of legitimately installed software when the emulated hinv
+  differs from the image's real home — under a headless guest it once
+  fingered a Newport graphics patch, and removing that genuinely broke the
+  system. Once `go` reports success the files are installed: suspend inst
+  with Ctrl-Z and move on.
 
 ## Adapting this to your own IRIX project
 
