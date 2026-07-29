@@ -201,7 +201,8 @@ if [ "$DO_GENDIST" = 1 ]; then
 	# version-less CI binary builds).
 	DISTVER=$(dist_version_from "${VERSION:-$(date -u +%Y-%m-%d-%H-%M)}")
 	stage_inst_inputs "$FLAVOR" "$DISTVER" "$STAGE"
-	mkdir -p "$STAGE/out/inst"
+	mkdir -p "$STAGE/chest" "$STAGE/out/inst"
+	cp "$REPO/desktop/scsitoolbox.chest" "$STAGE/chest/"
 fi
 
 # ---- 2. build the work disk ----------------------------------------------------
@@ -298,12 +299,12 @@ if [ "$DO_GENDIST" = 1 ]; then
 	echo ">>> packaging with the guest's own gendist"
 	ser_send "test -x /usr/sbin/gendist && echo PK-'TOOL'-YES || echo PK-'TOOL'-NO"
 	if ser_wait "PK-TOOL-YES" 20; then
-		ser_send "rm -rf /tmp/pk && mkdir /tmp/pk /tmp/pk/bin /tmp/pk/dist && cp /mnt/irixscsitb.spec /mnt/irixscsitb.idb /tmp/pk && cp irixscsitb /tmp/pk/bin/ && (test -f scsitbgui && cp scsitbgui /tmp/pk/bin/) ; echo PK-'STAGE'-OK"
+		ser_send "rm -rf /tmp/pk && mkdir /tmp/pk /tmp/pk/bin /tmp/pk/dist && cp /mnt/irixscsitb.spec /mnt/irixscsitb.idb /tmp/pk && cp -r /mnt/chest /tmp/pk && cp irixscsitb /tmp/pk/bin/ && (test -f scsitbgui && cp scsitbgui /tmp/pk/bin/) ; echo PK-'STAGE'-OK"
 		ser_wait "PK-STAGE-OK" 60 || { echo "gendist staging failed:" >&2; tail -10 "$CONSOLE" >&2; exit 1; }
-		# idb filter: drop the GUI line when no GUI was built (an image
-		# without Motif legitimately has none). Plain grep — 5.3's old awk
-		# can't be trusted with system().
-		ser_send "cd /tmp/pk && (test -f bin/scsitbgui && cp irixscsitb.idb idb.f || grep -v scsitbgui irixscsitb.idb > idb.f) && gendist -verbose -sbase /tmp/pk -idb /tmp/pk/idb.f -spec /tmp/pk/irixscsitb.spec -dist /tmp/pk/dist -all && cp dist/* /mnt/out/inst/ && cd /tmp/bsbuild && echo PK-'GEN'-OK || echo PK-'GEN'-FAIL"
+		# idb filter: drop the GUI line — and its Toolchest launcher — when
+		# no GUI was built (an image without Motif legitimately has none).
+		# Plain grep: 5.3's old awk can't be trusted with system().
+		ser_send "cd /tmp/pk && (test -f bin/scsitbgui && cp irixscsitb.idb idb.f || grep -v scsitbgui irixscsitb.idb | grep -v scsitoolbox > idb.f) && gendist -verbose -sbase /tmp/pk -idb /tmp/pk/idb.f -spec /tmp/pk/irixscsitb.spec -dist /tmp/pk/dist -all && cp dist/* /mnt/out/inst/ && cd /tmp/bsbuild && echo PK-'GEN'-OK || echo PK-'GEN'-FAIL"
 		ser_wait_long "PK-GEN-OK" 2 "gendist" || { tail -20 "$CONSOLE" >&2; exit 1; }
 	else
 		echo ">>> WARNING: guest has no /usr/sbin/gendist (inst_dev.sw not installed);"

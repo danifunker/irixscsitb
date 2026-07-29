@@ -1,2 +1,3 @@
+f 0644 root sys usr/lib/X11/app-chests/scsitoolbox.chest chest/scsitoolbox.chest irixscsitb.sw.@SUBSYS@
 f 0755 root sys usr/sbin/irixscsitb bin/irixscsitb irixscsitb.sw.@SUBSYS@
 f 0755 root sys usr/sbin/scsitbgui bin/scsitbgui irixscsitb.sw.@SUBSYS@

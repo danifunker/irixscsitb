@@ -1,0 +1,17 @@
+################################################################################
+# scsitoolbox.chest - installed by the irixscsitb Software Manager package
+# (irixscsitb.sw.*; scripts/irix-install.sh generates an equivalent fragment
+# when installing by hand, honoring a custom BINDIR - keep the menu text in
+# both places in sync).
+#
+# Pulled in by the "sinclude /usr/lib/X11/app-chests" at the end of
+# /usr/lib/X11/system.chestrc. Safe to delete - the menu entry goes with it.
+# f.checkexec.sh means the entry only shows while the program exists, so
+# removing the software hides it automatically.
+################################################################################
+
+Menu ToolChest
+{
+     no-label		f.separator
+    "SCSI Toolbox"	f.checkexec.sh "/usr/sbin/scsitbgui"
+}

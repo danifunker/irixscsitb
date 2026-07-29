@@ -16,9 +16,16 @@ per-flavor `.tardist` release artifacts.
   `@SUBSYS@` (`o32`/`n32`), `@ABI_DESC@`. Both flavors' products share the
   product name, so installing the other flavor later simply replaces it.
 - `irixscsitb.idb` — the file list, **sorted by destination path** (gendist
-  requires it), sources relative to the gendist `-sbase` under `bin/`. Lines
-  whose source binary wasn't built (a Motif-less image has no GUI) are
-  filtered in-guest before gendist runs.
+  requires it), sources relative to the gendist `-sbase`: the binaries under
+  `bin/` plus the **Toolchest entry** `desktop/scsitoolbox.chest` →
+  `/usr/lib/X11/app-chests/` (a drop-in fragment — no system file edited;
+  its `f.checkexec.sh` verb hides the menu item whenever the GUI is absent,
+  so removal needs no hook). When the GUI wasn't built (a Motif-less image),
+  both the GUI line and the chest line are filtered out in-guest before
+  gendist runs. The desktop icon (FTR rules + type-DB rebuild) remains the
+  domain of the hand-install `install.sh` — activating it requires editing
+  the filetype Makefile and running make there, which a package shouldn't do
+  silently.
 
 `gendist` ships in the **`inst_dev.sw`** subsystem ("Software Packager"). If
 a 5.3 image lacks it, `scripts/iris-gendist.sh` can install it into the

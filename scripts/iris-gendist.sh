@@ -143,8 +143,9 @@ ser_wait_long() {
 
 # ---- 1. stage: spec+idb (via ci-lib) + this flavor's binaries --------------------
 echo ">>> staging gendist inputs ($FLAVOR, inst version $DISTVER)"
-rm -rf "$STAGE"; mkdir -p "$STAGE/bin" "$STAGE/out"
+rm -rf "$STAGE"; mkdir -p "$STAGE/bin" "$STAGE/chest" "$STAGE/out"
 stage_inst_inputs "$FLAVOR" "$DISTVER" "$STAGE"
+cp "$REPO/desktop/scsitoolbox.chest" "$STAGE/chest/"
 cp "$DIR/irixscsitb-$FLAVOR" "$STAGE/bin/irixscsitb"
 [ -f "$DIR/scsitbgui-$FLAVOR" ] && cp "$DIR/scsitbgui-$FLAVOR" "$STAGE/bin/scsitbgui"
 
@@ -242,9 +243,9 @@ fi
 
 # ---- 5. gendist --------------------------------------------------------------------
 echo ">>> running gendist in the guest"
-ser_send "rm -rf /tmp/gd && mkdir /tmp/gd /tmp/gd/dist && cp -r /mnt/bin /mnt/irixscsitb.spec /mnt/irixscsitb.idb /tmp/gd && echo GD-'STAGE'-OK"
+ser_send "rm -rf /tmp/gd && mkdir /tmp/gd /tmp/gd/dist && cp -r /mnt/bin /mnt/chest /mnt/irixscsitb.spec /mnt/irixscsitb.idb /tmp/gd && echo GD-'STAGE'-OK"
 ser_wait "GD-STAGE-OK" 90 || { tail -8 "$CONSOLE" >&2; exit 1; }
-ser_send "cd /tmp/gd && (test -f bin/scsitbgui && cp irixscsitb.idb idb.f || grep -v scsitbgui irixscsitb.idb > idb.f) && gendist -verbose -sbase /tmp/gd -idb /tmp/gd/idb.f -spec /tmp/gd/irixscsitb.spec -dist /tmp/gd/dist -all && echo GD-'GEN'-OK || echo GD-'GEN'-FAIL"
+ser_send "cd /tmp/gd && (test -f bin/scsitbgui && cp irixscsitb.idb idb.f || grep -v scsitbgui irixscsitb.idb | grep -v scsitoolbox > idb.f) && gendist -verbose -sbase /tmp/gd -idb /tmp/gd/idb.f -spec /tmp/gd/irixscsitb.spec -dist /tmp/gd/dist -all && echo GD-'GEN'-OK || echo GD-'GEN'-FAIL"
 ser_wait_long "GD-GEN-OK" 2 "gendist" || { tail -20 "$CONSOLE" >&2; exit 1; }
 ser_send "cp /tmp/gd/dist/* /mnt/out/ && cd / && umount /mnt && sync && echo GD-'XFER'-OK"
 ser_wait "GD-XFER-OK" 60 || { tail -8 "$CONSOLE" >&2; exit 1; }

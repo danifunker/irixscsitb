@@ -96,7 +96,10 @@ makes easy — for the IRIS emulator or real SGI/BlueSCSI hardware:
 | `irixscsitb-*.hda.gz` | SGI EFS hard-disk image (dvh + EFS root), gzipped | `gunzip`, attach as a SCSI disk in IRIS (`cdrom = false`), mount, `inst -f` from the mounted `dist53`/`dist65`. |
 | `irixscsitb-*.tar.gz` | the media tree + raw binaries (`bin53/`, `bin65/`, executable bits set) | Easiest with the IRIS emulator's built-in NFS server: drop the extracted tree in a `[nfs] shared_dir` folder, then inside IRIX `mount 192.168.0.1:/ /mnt && cp /mnt/*/bin53/irixscsitb /usr/sbin/`. |
 
-Every medium carries **`/dist53`** and **`/dist65`** — each a complete
+The packages install the binaries into `/usr/sbin` **and the Toolchest
+entry** ("SCSI Toolbox", visible after the window manager restarts; it hides
+itself if the GUI is removed). Every medium carries **`/dist53`** and
+**`/dist65`** — each a complete
 Software Manager distribution **packaged by the OS that built it** (the 5.3
 guest's own `gendist` packages the o32 build in the 5.3 product format that
 every inst through 6.5 reads; the 6.5 guest packages its n32 build) — plus a

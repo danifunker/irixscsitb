@@ -179,7 +179,13 @@ the build session: `iris-build.sh` runs the guest's native `gendist` over
 `inst/irixscsitb.spec` + `.idb` (templated per flavor by ci-lib's
 `stage_inst_inputs`; one subsystem per product, same product name so
 installing the other flavor replaces it), emitting `$OUTDIR/inst53` /
-`inst65`. The 5.3 product format is readable by every inst 5.3–6.5; the 6.5
+`inst65`. The products install the binaries AND the Toolchest fragment
+(`desktop/scsitoolbox.chest` → `/usr/lib/X11/app-chests/`; static /usr/sbin
+path — install.sh keeps generating its own to honor BINDIR, keep the menu
+text in sync); a GUI-less build drops both the GUI and the chest from the
+idb. Desktop-icon FTR activation stays install.sh-only (it edits the
+filetype Makefile + runs make — not something a package should do
+silently). The 5.3 product format is readable by every inst 5.3–6.5; the 6.5
 product (`pd001V630...`) is 6.x-only — which is exactly why per-OS packaging
 is right. `--no-gendist` / `BUILD_INST=0` skip it; a guest without
 `/usr/sbin/gendist` (the `inst_dev.sw` "Software Packager" subsystem) skips
