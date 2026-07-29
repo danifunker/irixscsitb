@@ -293,11 +293,14 @@ if [ -n "$BIN_OUT" ]; then cp "$OUTDIR/$CLI_NAME" "$BIN_OUT"; echo ">>> CLI bina
 if [ -n "$GUI_OUT" ] && [ "$GUI_BUILT" = 1 ]; then cp "$OUTDIR/$GUI_NAME" "$GUI_OUT"; echo ">>> GUI binary: $GUI_OUT"; fi
 
 # ---- 7. package (o32 only, unless suppressed) --------------------------------------
+# Single-flavor convenience packaging: media with a dist53/ directory only.
+# Full dual-flavor media come from package-dist.sh after both builds.
 if [ "$DO_PACKAGE" = 1 ]; then
 	echo ">>> packaging distributable artifacts"
-	"$REPO/scripts/package.sh" \
-		--bin "$OUTDIR/$CLI_NAME" --version "$VERSION" --outdir "$OUTDIR" \
-		--rb-cli "$RB" --extra "$REPO/README.md"
+	set -- --version "$VERSION" --outdir "$OUTDIR" --rb-cli "$RB" \
+	       --extra "$REPO/README.md" --dist53-bin "$OUTDIR/$CLI_NAME"
+	[ "$GUI_BUILT" = 1 ] && set -- "$@" --dist53-gui "$OUTDIR/$GUI_NAME"
+	"$REPO/scripts/package.sh" "$@"
 fi
 
 echo

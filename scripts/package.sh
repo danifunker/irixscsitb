@@ -22,18 +22,26 @@
 # `optical new sgi-efs` and the HDD builder is `new hd sgi-efs`. The old
 # top-level `new-sgi-cdrom` / `new-sgi-hdd` / `new --fs efs` verbs were renamed.
 #
+# Both flavors ride on every medium, in per-flavor directories so nobody has
+# to guess which binary they are looking at:
+#   /dist53/irixscsitb [+ scsitbgui]   o32/mips2 — runs on IRIX 5.3 through 6.5
+#   /dist65/irixscsitb [+ scsitbgui]   n32/mips3 — IRIX 6.x only, faster
+#   /README-dist.txt                   generated: which directory is which
+# The .tar.gz carries the same dist53/ + dist65/ tree.
+#
 # Usage:
-#   scripts/package.sh --bin PATH/irixscsitb-o32 --version VER [options]
+#   scripts/package.sh --dist53-bin PATH --dist65-bin PATH --version VER [options]
 #
 # Options (defaults in brackets):
-#   --bin PATH        primary IRIX binary -> images (as /irixscsitb) + tarball (required)
-#   --gui-bin PATH    Motif GUI binary -> images (as /scsitbgui) + tarball (optional)
+#   --dist53-bin PATH  o32 CLI  -> dist53/irixscsitb   (at least one of the
+#   --dist65-bin PATH  n32 CLI  -> dist65/irixscsitb    two CLIs is required)
+#   --dist53-gui PATH  o32 GUI  -> dist53/scsitbgui    (optional)
+#   --dist65-gui PATH  n32 GUI  -> dist65/scsitbgui    (optional)
 #   --version VER     version string used in output filenames (required)
 #   --outdir DIR      where to write the artifacts       [dist]
 #   --rb-cli PATH     rb-cli binary    [$RB_CLI, then `rb-cli` on PATH]
-#   --name LABEL      EFS volume label, max 6 bytes       [BSTOOL]
-#   --extra PATH      extra file at image root + in tarball (repeatable)
-#   --tar-bin PATH    extra binary for the tarball only, e.g. the n32 build (repeatable)
+#   --name LABEL      EFS volume label, max 6 bytes       [SCSITB]
+#   --extra PATH      extra file at image root + tarball top (repeatable)
 #   --cd-size SIZE    EFS CD image size                   [8M]
 #   --hdd-size SIZE   SGI HDD image size                  [50M]
 #   --heads N         HDD geometry heads (IRIS = 16)      [16]
@@ -43,18 +51,19 @@
 #   --no-tar          skip the .tar.gz
 set -eu
 
-BIN=""
-GUI_BIN=""
+BIN53=""
+GUI53=""
+BIN65=""
+GUI65=""
 VERSION=""
 OUTDIR="dist"
 RB="${RB_CLI:-rb-cli}"
-NAME="BSTOOL"
+NAME="SCSITB"
 CD_SIZE="8M"
 HDD_SIZE="50M"
 HEADS="16"
 SECTORS="63"
 EXTRAS=""
-TAR_BINS=""
 DO_ISO=1
 DO_HDA=1
 DO_TAR=1
@@ -63,14 +72,15 @@ die() { echo "package: $*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--bin)      BIN="$2"; shift 2 ;;
-		--gui-bin)  GUI_BIN="$2"; shift 2 ;;
+		--dist53-bin) BIN53="$2"; shift 2 ;;
+		--dist53-gui) GUI53="$2"; shift 2 ;;
+		--dist65-bin) BIN65="$2"; shift 2 ;;
+		--dist65-gui) GUI65="$2"; shift 2 ;;
 		--version)  VERSION="$2"; shift 2 ;;
 		--outdir)   OUTDIR="$2"; shift 2 ;;
 		--rb-cli)   RB="$2"; shift 2 ;;
 		--name)     NAME="$2"; shift 2 ;;
 		--extra)    EXTRAS="$EXTRAS $2"; shift 2 ;;
-		--tar-bin)  TAR_BINS="$TAR_BINS $2"; shift 2 ;;
 		--cd-size)  CD_SIZE="$2"; shift 2 ;;
 		--hdd-size) HDD_SIZE="$2"; shift 2 ;;
 		--heads)    HEADS="$2"; shift 2 ;;
@@ -78,15 +88,18 @@ while [ $# -gt 0 ]; do
 		--no-iso)   DO_ISO=0; shift ;;
 		--no-hda)   DO_HDA=0; shift ;;
 		--no-tar)   DO_TAR=0; shift ;;
-		-h|--help)  sed -n '2,42p' "$0"; exit 0 ;;
+		-h|--help)  sed -n '2,50p' "$0"; exit 0 ;;
 		*)          die "unknown option: $1" ;;
 	esac
 done
 
-[ -n "$BIN" ] || die "missing --bin"
 [ -n "$VERSION" ] || die "missing --version"
-[ -f "$BIN" ] || die "binary not found: $BIN"
-[ -z "$GUI_BIN" ] || [ -f "$GUI_BIN" ] || die "gui binary not found: $GUI_BIN"
+[ -n "$BIN53" ] || [ -n "$BIN65" ] || die "need --dist53-bin and/or --dist65-bin"
+for f in "$BIN53" "$GUI53" "$BIN65" "$GUI65"; do
+	[ -z "$f" ] || [ -f "$f" ] || die "not found: $f"
+done
+[ -z "$GUI53" ] || [ -n "$BIN53" ] || die "--dist53-gui without --dist53-bin"
+[ -z "$GUI65" ] || [ -n "$BIN65" ] || die "--dist65-gui without --dist65-bin"
 command -v "$RB" >/dev/null 2>&1 || [ -x "$RB" ] || die "rb-cli not found: $RB"
 
 # Fail early (and clearly) if this rb-cli predates the current builder grammar.
@@ -105,31 +118,60 @@ ISO_IMG="$OUTDIR/irixscsitb-$VERSION.iso"
 HDD_IMG="$OUTDIR/irixscsitb-$VERSION.hda"
 TARBALL="$OUTDIR/irixscsitb-$VERSION.tar.gz"
 
-# put_payload <image-ref> : drop the binaries (as /irixscsitb [+ /scsitbgui])
-# + any extras at the volume root. <image-ref> addresses the EFS partition as
-# "@1" for both the CD (slot 7) and the HDD (slot 0) — rb-cli maps @1 to the
-# sole EFS partition.
+# The payload manifest: "host-path|guest-path" lines, one per file. Built
+# once, used by the image populate, the round-trip verify, AND the tarball,
+# so the three can never disagree about what ships.
+README_DIST="$OUTDIR/.README-dist.$$"
+{
+	echo "irixscsitb $VERSION - toolbox for BlueSCSI / ZuluSCSI on SGI IRIX"
+	echo ""
+	[ -z "$BIN53" ] || echo "dist53/   o32 (mips2) binaries: run on IRIX 5.3 through 6.5"
+	[ -z "$BIN65" ] || echo "dist65/   n32 (mips3) binaries: IRIX 6.x ONLY, faster"
+	echo ""
+	echo "Each directory holds irixscsitb (the CLI) and, where the build had"
+	echo "Motif, scsitbgui (the GUI). EFS media store files mode 0644: after"
+	echo "copying off the CD/disk, chmod +x the binaries. The .tar.gz carries"
+	echo "the executable bits already."
+} > "$README_DIST"
+
+PAYLOAD=""
+add_payload() { PAYLOAD="$PAYLOAD$1|$2
+"; }
+[ -z "$BIN53" ] || add_payload "$BIN53" "/dist53/irixscsitb"
+[ -z "$GUI53" ] || add_payload "$GUI53" "/dist53/scsitbgui"
+[ -z "$BIN65" ] || add_payload "$BIN65" "/dist65/irixscsitb"
+[ -z "$GUI65" ] || add_payload "$GUI65" "/dist65/scsitbgui"
+add_payload "$README_DIST" "/README-dist.txt"
+for f in $EXTRAS; do
+	add_payload "$f" "/$(basename "$f")"
+done
+
+# put_payload <image-ref> : create the flavor dirs and drop every manifest
+# file. <image-ref> addresses the EFS partition as "@1" for both the CD
+# (slot 7) and the HDD (slot 0) — rb-cli maps @1 to the sole EFS partition.
 put_payload() {
 	ref="$1"
-	"$RB" put "$ref" "$BIN" /irixscsitb
-	[ -z "$GUI_BIN" ] || "$RB" put "$ref" "$GUI_BIN" /scsitbgui
-	for f in $EXTRAS; do
-		"$RB" put "$ref" "$f" "/$(basename "$f")"
+	[ -z "$BIN53" ] || "$RB" mkdir "$ref" /dist53
+	[ -z "$BIN65" ] || "$RB" mkdir "$ref" /dist65
+	printf '%s' "$PAYLOAD" | while IFS='|' read -r host guest; do
+		[ -n "$host" ] || continue
+		"$RB" put "$ref" "$host" "$guest"
 	done
 }
 
-# Round-trip: each binary we read back must match its source.
+# Round-trip: every manifest file read back must match its source.
 verify_roundtrip() {
 	ref="$1"; label="$2"
 	tmpd="$(mktemp -d)"
-	"$RB" get "$ref" /irixscsitb "$tmpd/out"
-	cmp "$BIN" "$tmpd/out" || { rm -rf "$tmpd"; die "$label round-trip MISMATCH"; }
-	if [ -n "$GUI_BIN" ]; then
-		"$RB" get "$ref" /scsitbgui "$tmpd/gui"
-		cmp "$GUI_BIN" "$tmpd/gui" || { rm -rf "$tmpd"; die "$label GUI round-trip MISMATCH"; }
-	fi
+	printf '%s' "$PAYLOAD" | while IFS='|' read -r host guest; do
+		[ -n "$host" ] || continue
+		"$RB" -q get "$ref" "$guest" "$tmpd/rt"
+		cmp -s "$host" "$tmpd/rt" || { echo "MISMATCH $guest" > "$tmpd/fail"; break; }
+		rm -f "$tmpd/rt"
+	done
+	[ ! -f "$tmpd/fail" ] || { read -r m < "$tmpd/fail"; rm -rf "$tmpd"; die "$label round-trip $m"; }
 	rm -rf "$tmpd"
-	echo "    $label round-trip OK"
+	echo "    $label round-trip OK (all files)"
 }
 
 if [ "$DO_ISO" = 1 ]; then
@@ -155,31 +197,29 @@ if [ "$DO_TAR" = 1 ]; then
 	stage="$(mktemp -d)"
 	top="irixscsitb-$VERSION"
 	mkdir -p "$stage/$top"
-	# Binaries are stored by basename and made executable, so `tar xf` yields a
-	# ready-to-run binary (unlike the EFS images, which land 0644 — chmod +x
-	# after copying off the media).
-	cp "$BIN" "$stage/$top/"
-	chmod +x "$stage/$top/$(basename "$BIN")"
-	if [ -n "$GUI_BIN" ]; then
-		cp "$GUI_BIN" "$stage/$top/"
-		chmod +x "$stage/$top/$(basename "$GUI_BIN")"
-	fi
-	for f in $TAR_BINS; do
-		[ -f "$f" ] || die "tar-bin not found: $f"
-		cp "$f" "$stage/$top/"
-		chmod +x "$stage/$top/$(basename "$f")"
-	done
-	for f in $EXTRAS; do
-		cp "$f" "$stage/$top/"
+	# Same dist53/ + dist65/ tree as the media, with the executable bits set,
+	# so `tar xf` yields ready-to-run binaries (the EFS images land 0644 —
+	# chmod +x after copying off).
+	printf '%s' "$PAYLOAD" | while IFS='|' read -r host guest; do
+		[ -n "$host" ] || continue
+		case "$guest" in
+			/README-dist.txt) dest="$top/README-dist.txt" ;;
+			*)                dest="$top$guest" ;;
+		esac
+		mkdir -p "$stage/$(dirname "$dest")"
+		cp "$host" "$stage/$dest"
+		case "$guest" in /dist*/*) chmod +x "$stage/$dest" ;; esac
 	done
 	tar czf "$TARBALL" -C "$stage" "$top"
 	rm -rf "$stage"
 	echo "    contents:"; tar tzf "$TARBALL" | sed 's/^/      /'
 fi
 
+rm -f "$README_DIST"
 echo
 echo "Packaged irixscsitb $VERSION:"
 ls -la "$OUTDIR"/irixscsitb-"$VERSION".* 2>/dev/null || true
-echo "Note: EFS stores Unix mode bits - the .iso/.hda land irixscsitb 0644, so on"
-echo "IRIX run 'chmod +x irixscsitb' after copying it off the media (the .tar.gz"
-echo "already carries the executable bit)."
+echo "Note: EFS stores Unix mode bits - the .iso/.hda land the binaries 0644, so"
+echo "on IRIX run 'chmod +x' after copying them off the media (the .tar.gz"
+echo "already carries the executable bits). See README-dist.txt on the media"
+echo "for which directory (dist53/dist65) fits which IRIX."

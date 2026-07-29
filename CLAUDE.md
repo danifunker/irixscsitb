@@ -155,10 +155,11 @@ binary:
   --sectors 63` + `put IMG.hda@1 …`. dvh volume-header + EFS root at **slot 0**
   (geometry 16×63 matches the IRIS emulator). In IRIS attach as a `cdrom = false`
   device.
-- **`.tar.gz`** — plain gzip tar of the binaries + README. The friendliest
-  vector now that IRIS ships a built-in NFS server: drop the contents in a
-  `[nfs] shared_dir` folder and untar from inside IRIX. Unlike the images (which
-  land the binary 0644), the tarball carries the executable bit.
+- **`.tar.gz`** — the same `dist53/` + `dist65/` tree as the media, plus the
+  READMEs. The friendliest vector now that IRIS ships a built-in NFS server:
+  drop the contents in a `[nfs] shared_dir` folder and copy from inside IRIX.
+  Unlike the images (which land files 0644), the tarball carries the
+  executable bits.
 
 Both the CD and HDD address the EFS partition as **`@1`** for `put`/`get`/`ls`/`fsck`
 (rb-cli maps `@1` to the sole EFS partition regardless of its slot number). The
@@ -167,15 +168,22 @@ to the above; `package.sh` preflights for the new grammar and errors clearly if
 rb-cli is too old.
 
 ```sh
-scripts/package.sh --bin irixscsitb-o32 --gui-bin scsitbgui-o32 \
-  --tar-bin irixscsitb-n32 --tar-bin scsitbgui-n32 \
+scripts/package.sh --dist53-bin irixscsitb-o32 --dist53-gui scsitbgui-o32 \
+  --dist65-bin irixscsitb-n32 --dist65-gui scsitbgui-n32 \
   --version 2026-06-17 --rb-cli ./rb-cli --extra README.md
 ```
 
-The script `fsck`s and round-trip-verifies the `.iso` and `.hda` (each binary
-read back must `cmp` its source). `--gui-bin` adds the Motif GUI to the images
-(as `/scsitbgui`) and the tarball; `--tar-bin` is repeatable for tar-only
-extras (the n32 pair).
+Every medium (and the tarball) carries **per-flavor directories** so nobody
+has to guess which binary they got: `dist53/` = o32 (runs 5.3–6.5),
+`dist65/` = n32 (6.x-only, faster), each holding `irixscsitb` +
+(when built) `scsitbgui`, plus a generated `/README-dist.txt` explaining
+exactly that. `package.sh` takes `--dist53-bin/--dist53-gui` /
+`--dist65-bin/--dist65-gui` (at least one CLI required — media can be
+single-flavor when only one image is available), builds one payload manifest,
+and uses it for populate, round-trip verify (every file `cmp`'d back out) and
+the tarball, so the three can never disagree. The EFS volume label defaults
+to **`SCSITB`** (`--name`, ≤6 bytes — it's what the IRIX desktop shows;
+`BSTOOL` was a bstoolbox-era leftover).
 
 `.github/workflows/release.yml` builds BOTH flavors natively in IRIS — one
 matrixed `build-native` job, prebuilt emulator binaries via

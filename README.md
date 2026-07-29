@@ -90,13 +90,15 @@ makes easy — for the IRIS emulator or real SGI/BlueSCSI hardware:
 
 | Artifact | What it is | How to use |
 |----------|-----------|------------|
-| `irixscsitb-*.tar` | binaries (`o32` + `n32`) + README (plain tar — IRIX 5.3 cannot extract `.gz`) | Easiest with the IRIS emulator's built-in NFS server: point `[nfs] shared_dir` at a folder, drop the extracted files in, then inside IRIX `mount 192.168.0.1:/ /mnt && cp /mnt/irixscsitb-o32 /usr/local/bin/irixscsitb`. Also works over ftp/rcp. Carries the executable bit. |
-| `irixscsitb-*.iso` | IRIX EFS CD-ROM image | Attach as a CD in IRIS (`cdrom = true`) or burn it. On IRIX: `mount -t efs -o ro /dev/dsk/dks0d<N>s7 /CDROM`, then copy `irixscsitb` off and `chmod +x` it. |
-| `irixscsitb-*.hda` | SGI EFS hard-disk image (dvh + EFS root) | Attach as a SCSI disk in IRIS (`cdrom = false`). Mount the EFS root, copy `irixscsitb` off, `chmod +x`. |
+| `irixscsitb-*.tar.gz` | `dist53/` + `dist65/` trees + READMEs | Easiest with the IRIS emulator's built-in NFS server: point `[nfs] shared_dir` at a folder, drop the extracted tree in, then inside IRIX `mount 192.168.0.1:/ /mnt && cp /mnt/*/dist53/irixscsitb /usr/sbin/`. Also works over ftp/rcp. Carries the executable bits. |
+| `irixscsitb-*.iso` | IRIX EFS CD-ROM image (volume `SCSITB`) | Attach as a CD in IRIS (`cdrom = true`) or burn it. On IRIX: `mount -t efs -o ro /dev/dsk/dks0d<N>s7 /CDROM`, then copy from `dist53/` or `dist65/` and `chmod +x`. |
+| `irixscsitb-*.hda` | SGI EFS hard-disk image (dvh + EFS root) | Attach as a SCSI disk in IRIS (`cdrom = false`). Mount the EFS root, copy from `dist53/` or `dist65/`, `chmod +x`. |
 
-Use the **`o32`** binary for anything from IRIX 5.3 through 6.5; the **`n32`**
-binary is a faster 6.x-only build. The `.iso`/`.hda` store the binary mode 0644,
-so `chmod +x irixscsitb` after copying it off; the `.tar.gz` is already executable.
+Every medium carries the same two directories — **`dist53/`** holds the o32
+binaries (run on anything from IRIX 5.3 through 6.5) and **`dist65/`** the
+faster n32 binaries (IRIX 6.x only) — plus a `README-dist.txt` saying exactly
+that. The `.iso`/`.hda` store files mode 0644, so `chmod +x` after copying
+off; the `.tar.gz` already carries the executable bits.
 
 ## CI: built natively on IRIX, inside the IRIS emulator
 

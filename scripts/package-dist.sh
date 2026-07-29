@@ -40,23 +40,17 @@ done
 [ -n "$DIR" ] || die "missing --dir"
 DIR=$(cd "$DIR" 2>/dev/null && pwd) || die "dist dir not found: $DIR"
 
-# The images' /irixscsitb is the o32 (portable) binary when built; an
-# n32-only run falls back to n32 — clearly noted, it is 6.x-only media then.
-if [ -f "$DIR/irixscsitb-o32" ]; then
-	BASE="o32"
-elif [ -f "$DIR/irixscsitb-n32" ]; then
-	BASE="n32"
-	echo "package-dist: NOTE: no o32 binary — the .iso/.hda will carry the n32 build, which runs on IRIX 6.x ONLY" >&2
-else
-	die "no irixscsitb-o32 or irixscsitb-n32 in $DIR — nothing to package"
-fi
+# Every medium carries a dist53/ (o32) and/or dist65/ (n32) directory —
+# whichever flavors were actually built.
+[ -f "$DIR/irixscsitb-o32" ] || [ -f "$DIR/irixscsitb-n32" ] \
+	|| die "no irixscsitb-o32 or irixscsitb-n32 in $DIR — nothing to package"
+[ -f "$DIR/irixscsitb-o32" ] \
+	|| echo "package-dist: NOTE: no o32 build — the media get dist65/ only, and those binaries run on IRIX 6.x ONLY" >&2
 
-set -- --bin "$DIR/irixscsitb-$BASE" --version "$VERSION" \
-       --outdir "$DIR" --rb-cli "$RB" --extra "$REPO/README.md"
-[ -f "$DIR/scsitbgui-$BASE" ] && set -- "$@" --gui-bin "$DIR/scsitbgui-$BASE"
-for f in irixscsitb-o32 scsitbgui-o32 irixscsitb-n32 scsitbgui-n32; do
-	case "$f" in irixscsitb-$BASE|scsitbgui-$BASE) continue ;; esac
-	[ -f "$DIR/$f" ] && set -- "$@" --tar-bin "$DIR/$f"
-done
+set -- --version "$VERSION" --outdir "$DIR" --rb-cli "$RB" --extra "$REPO/README.md"
+[ -f "$DIR/irixscsitb-o32" ] && set -- "$@" --dist53-bin "$DIR/irixscsitb-o32"
+[ -f "$DIR/scsitbgui-o32" ]  && set -- "$@" --dist53-gui "$DIR/scsitbgui-o32"
+[ -f "$DIR/irixscsitb-n32" ] && set -- "$@" --dist65-bin "$DIR/irixscsitb-n32"
+[ -f "$DIR/scsitbgui-n32" ]  && set -- "$@" --dist65-gui "$DIR/scsitbgui-n32"
 
 exec "$REPO/scripts/package.sh" "$@"
