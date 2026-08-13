@@ -967,6 +967,21 @@ int toolbox_probe(const char *path, ToolboxScanEntry *out)
 		      (toolbox_modesense_page31(dev, 1) == 0);
 	out->confirmed = out->claims && (toolbox_confirm(dev, 1, NULL) == 0);
 
+	/*
+	 * And separately: is this the Wi-Fi target? It is a different question
+	 * with a different answer, because the firmware's emulated network
+	 * device implements 0x1C but NOT 0xD0-0xDA - inquiry.c deliberately
+	 * skips appending the toolbox tail for S2S_CFG_NETWORK - so it will
+	 * never be [TOOLBOX] and the disk beside it will never be [WIFI].
+	 * Reporting both in one scan is what saves the operator from having to
+	 * guess which of the emulated IDs carries the radio.
+	 *
+	 * The identity we just built is handed over so this costs no second
+	 * INQUIRY, and it is a probe, so a node that ignores 0x1C costs one
+	 * failed command rather than ten retries.
+	 */
+	out->wifi = toolbox_wifi_probe(dev, out->identity, 1);
+
 	scsi_close(dev);
 	return 0;
 }

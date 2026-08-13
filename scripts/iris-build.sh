@@ -190,7 +190,7 @@ ser_wait_long() { # pattern rounds-of-170s label
 echo ">>> staging sources into $STAGE"
 sh "$REPO/scripts/mkversion.sh" "$REPO/version.h" >/dev/null
 rm -rf "$STAGE"; mkdir -p "$STAGE/out"
-for f in irixscsitb.c toolbox.c gui_motif.c version.c irix.c \
+for f in irixscsitb.c toolbox.c wifi.c gui_motif.c version.c irix.c \
          irixscsitb.h os.h Makefile version.h; do
 	cp "$REPO/$f" "$STAGE/$f"
 done

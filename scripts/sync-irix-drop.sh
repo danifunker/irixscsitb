@@ -46,7 +46,7 @@ mkdir -p "$DEST" "$DEST/scripts"
 
 # Sources the IRIX build actually compiles. linux.c is deliberately absent:
 # the Makefile never selects it on IRIX and it would not compile there anyway.
-for f in irixscsitb.c toolbox.c gui_motif.c version.c irix.c \
+for f in irixscsitb.c toolbox.c wifi.c gui_motif.c version.c irix.c \
          irixscsitb.h os.h Makefile README.md version.h; do
 	cp "$REPO/$f" "$DEST/$f"
 done

@@ -10,7 +10,9 @@ Guidance for working in this repository.
 host (SGI **IRIX**) or on **Linux**, talks to the device over the SCSI bus using
 vendor command codes `0xD0`–`0xDA`, and lets you list/fetch/send files in the
 device's `/shared` directory, list and switch CD images, enumerate emulated
-targets, toggle debug, and interrogate/scan the bus.
+targets, toggle debug, and interrogate/scan the bus. It also speaks the Toolbox
+**Wi-Fi** commands (`0x1C`) to the firmware's emulated network target — scan,
+status, join.
 
 It is the IRIX/Linux sibling of **`../escsitoolbox`** (DOS/Windows, same
 firmware). Keep the protocol constants in `irixscsitb.h` named to match that project's
@@ -37,10 +39,11 @@ Upstream useful changes here are candidates to PR back to SonnyJim/bstoolbox.
 | File | Role |
 |------|------|
 | `toolbox.c` | **The core.** OS- and UI-agnostic: all `toolbox_*` command builders, two-stage detection, single-node probe. Returns data, never prints a result. |
+| `wifi.c` | **The Wi-Fi core.** The `0x1C` command builders and the two-stage Wi-Fi target detection. Split from `toolbox.c` because it is a different command family (six-byte CDB, subcommands) on a *different target* (the emulated DaynaPort). Same printless contract. |
 | `irixscsitb.c` | CLI front end: `getopt`, `main`/`do_drive`, and the `cli_*` functions that turn core results into stdout text. Speaks no SCSI itself. |
 | `gui_motif.c` | IRIS IM (Motif 1.2) GUI front end. IRIX-only, links the same `toolbox.o`. |
 | `version.c` | Build identification. The only file that includes the generated headers. |
-| `irixscsitb.h` | Protocol constants (command opcodes, `TOOLBOX_API_VER`), `scsi_inquiry` / `ToolboxFileEntry` / `ToolboxDetect` / `ToolboxScanEntry` structs, modes/enums, `extern` globals, and the core API prototypes. |
+| `irixscsitb.h` | Protocol constants (command opcodes, `TOOLBOX_API_VER`, the `0x1C` Wi-Fi subcommands and wire sizes), `scsi_inquiry` / `ToolboxFileEntry` / `ToolboxDetect` / `ToolboxScanEntry` / `ToolboxWifiNetwork` structs, modes/enums, `extern` globals, and the core API prototypes. |
 | `os.h` | The OS-backend contract (see below). |
 | `irix.c` | IRIX backend: `<sys/dsreq.h>` `DS_ENTER` ioctls, `mediad` start/stop. |
 | `linux.c` | Linux backend: `<scsi/sg.h>` `SG_IO` ioctls. |
@@ -52,22 +55,26 @@ Upstream useful changes here are candidates to PR back to SonnyJim/bstoolbox.
 | `docs/HOWTO-IRIS.txt` | Shipped into the drop; instructions for the IRIX side. |
 | `docs/ci-iris.md` | The IRIS-in-CI sample-project guide: work-disk transfer, CoW overlays, PROM scripting, adapting to other IRIX projects. |
 
-**Three-layer split:** transport (`irix.c`/`linux.c`) → protocol (`toolbox.c`) →
-presentation (`irixscsitb.c`, `gui_motif.c`). The core must stay printless: it
+**Three-layer split:** transport (`irix.c`/`linux.c`) → protocol (`toolbox.c`,
+`wifi.c`) → presentation (`irixscsitb.c`, `gui_motif.c`). The core must stay printless: it
 may write errors and `verbose` diagnostics to stderr, but a *result* always goes
 back as a return value or a filled struct, because the GUI needs it as widget
 state rather than as text. Adding an operation means a `toolbox_*` function in
-`toolbox.c` plus a `cli_*` printer in `irixscsitb.c`.
+`toolbox.c` (or `wifi.c`) plus a `cli_*` printer in `irixscsitb.c`.
 
-**OS abstraction contract** (`os.h`) — `toolbox.c` only ever calls these; each
-backend implements them:
+**OS abstraction contract** (`os.h`) — `toolbox.c` and `wifi.c` only ever call
+these; each backend implements them:
 `scsi_open`, `scsi_close`, `scsi_send_command` (read / data-in),
 `scsi_send_commandw` (write / data-out), `scsi_send_command_probe` (data-in,
 single attempt, silent — used by the `-b` scanner so unanswered nodes don't cost
 10 retries + warnings), `scsi_enum_devices` (list the host's generic SCSI node
 paths), `path_to_devnum` (device path → SCSI ID), `mediad_start` /
 `mediad_stop`. When adding a feature, keep protocol logic in `toolbox.c` and
-only touch `irix.c`/`linux.c` for transport.
+only touch `irix.c`/`linux.c` for transport. **Adding a source file means
+updating six places**: the Makefile (five flavour targets, the object rule and
+the `test` target), `meson.build`, `scripts/sync-irix-drop.sh`,
+`scripts/iris-build.sh` and `scripts/irix-native-build.sh` — miss one and the
+IRIX build breaks in CI rather than here.
 
 ## What a build machine needs
 
@@ -114,11 +121,16 @@ make gui-syntax IRIX_INCLUDE=/path/to/irix/usr/include
 **`make test` is how you verify changes without hardware.** The dev machine is
 macOS with no IRIX/Linux SCSI headers, so `irix.c`/`linux.c` cannot be compiled
 here — but `toolbox.c` + `irixscsitb.c` (all the protocol, detection and CLI
-logic) *can*, by linking them against `tests/mock_os.c`, a fake 7-device SCSI bus
+logic) *can*, by linking them against `tests/mock_os.c`, a fake 9-device SCSI bus
 implementing the `os.h` contract. It covers a plain disk, an IRIS EMUL DISK, a CD-ROM, a real
-BlueSCSI, a real ZuluSCSI, a dead node, and a "liar" that serves page 0x31 but
-never implements `0xD9`. Expected: only BlueSCSI and ZuluSCSI are `[TOOLBOX]`;
-IRIS is not; the liar reads `claims toolbox, no 0xD9 answer`. **Run it after any
+BlueSCSI, a real ZuluSCSI, a dead node, a "liar" that serves page 0x31 but
+never implements `0xD9`, an emulated DaynaPort that answers the `0x1C` Wi-Fi
+commands, and a *genuine* Dayna SCSI/Link with the byte-identical INQUIRY
+identity and no radio. Expected: only BlueSCSI and ZuluSCSI are `[TOOLBOX]`;
+IRIS is not; the liar reads `claims toolbox, no 0xD9 answer`; only the emulated
+DaynaPort is `[WIFI]`. The test then runs `-W` and `-w` against the mock, which
+exercises the whole Wi-Fi path — including the six-byte CDB (the mock rejects a
+ten-byte one) and the signed-RSSI decode. **Run it after any
 change to detection or the command builders** — it catches regressions that a
 syntax check cannot. Add a device to `mock_paths[]`/`mock_command()` to cover
 new firmware.
@@ -127,10 +139,13 @@ Run **as root**. Device path is positional:
 - IRIX:  `irixscsitb -s /dev/scsi/sc0d1l0`
 - Linux: `irixscsitb -s /dev/sg2`
 
-Options: `-b` scan the bus (the **only** mode that needs no device path), `-i`
-interrogate, `-t` list emulated targets (device map), `-l` list CDs, `-s` list
-`/shared`, `-c N` switch CD, `-g N` get file N, `-p FILE` put file, `-o DIR`
-output dir, `-d 0|1` set debug, `-D` show debug, `-v` verbose. Options must
+Options: `-b` scan the bus, `-i` interrogate, `-t` list emulated targets (device
+map), `-l` list CDs, `-s` list `/shared`, `-c N` switch CD, `-g N` get file N,
+`-p FILE` put file, `-o DIR` output dir, `-d 0|1` set debug, `-D` show debug,
+`-v` verbose. Wi-Fi: `-w` scan, `-W` status, `-j SSID` join (`-k KEY`,
+`-n CHAN`). `-b` and the Wi-Fi options are the modes that need **no** device
+path — `-b` because it is how you find one, Wi-Fi because the node it needs is a
+different target from the disk and is located automatically. Options must
 precede the device path (IRIX `getopt` does not permute argv).
 
 **Device nodes:** always the *generic SCSI character* devices — IRIX
@@ -369,25 +384,103 @@ we don't yet know by name. Because of this, a new toolbox-capable firmware needs
 
 A soft Toolbox API-version check (`buf[buf[4]+4]`) only warns.
 
+## How Wi-Fi detection works (and why it is a separate device)
+
+See `docs/toolbox-protocol.md` §2.5 for the byte-level contract. The short
+version, because it is the thing that trips everyone up:
+
+**The Wi-Fi commands are answered by a different SCSI target than the toolbox
+commands, and never by the same one.** The firmware serves `0x1C` on its
+emulated NETWORK device (a DaynaPort SCSI/Link) and `0xD0`–`0xDA` on the disk or
+CD it is emulating. It is not an accident that the network target fails toolbox
+detection: `inquiry.c` explicitly skips appending the `INQUIRY_NAME` toolbox tail
+for `S2S_CFG_NETWORK`. So `-b` shows the two on separate rows, `[TOOLBOX]` and
+`[WIFI]`, and both tags landing on one row would mean something is wrong.
+
+Because of that, **the Wi-Fi options take no device path** — `toolbox_wifi_find()`
+walks the bus and returns the right node. Requiring a path would be requiring
+the operator to know which emulated ID carries the radio, which is only visible
+in the firmware's own config file.
+
+Detection is two-stage for the same reason the toolbox's is:
+
+1. **Claim** — the INQUIRY identity contains `SCSI/Link`. That one string covers
+   both firmware personalities (`Dayna SCSI/Link 2.0f` and
+   `AmigaNET SCSI/Link 1.0f`), so `wifi_firmware_ids[]` holds exactly one entry.
+2. **Confirm** — `WIFI_CMD_INFO` (`0x1C`/`0x04`) must answer with a two-byte
+   big-endian prefix reading exactly **74**. The firmware always reports
+   `sizeof(wifi_network_entry)` there whether or not the radio has joined
+   anything, so it is a reliable signature.
+
+The confirm step is not ceremony: **a genuine vintage Dayna SCSI/Link presents
+the identical INQUIRY identity and has no radio at all**, and `0x1C` is
+RECEIVE DIAGNOSTIC RESULTS in standard SCSI — so a plain disk may answer the
+opcode rather than reject it. Checking the *shape* of the reply is what
+separates them. (That the standard meaning is a read-only command is also why
+probing every node with it is safe.)
+
+Three protocol facts worth keeping in mind when editing `wifi.c`:
+
+- **The CDB is six bytes.** Everything else in this codebase sends ten. The
+  upstream firmware docs also say the subcommand is `CDB[2]`; it is `CDB[1]`,
+  with a big-endian length in `CDB[3..4]`. The firmware's *code* is the
+  authority, not its comment — see the note in `irixscsitb.h`.
+- **`SCAN_RESULTS` before the scan finishes is a CHECK CONDITION**, not an empty
+  list, so `toolbox_wifi_scan()` polls `COMPLETE` and only then fetches. It uses
+  `sleep(1)` because IRIX 5.3 has no `usleep`, and second granularity is fine
+  for something that takes seconds of radio time anyway.
+- **`JOIN` acknowledges the request, not the association.** The firmware hands
+  the credentials to the radio and answers GOOD at once, so both front ends wait
+  and then issue `INFO` to find out what actually happened.
+
+The wire structs are decoded byte by byte, never memcpy'd into a C struct: the
+firmware declares them `__attribute__((packed))`, which MIPSpro has no
+equivalent of. `rssi` is signed on the wire and is sign-extended explicitly —
+read as a plain `char` where that is unsigned, −67 dBm becomes 189.
+
 ## The Motif GUI (`gui_motif.c`)
 
 A **second binary** (`scsitbgui`), not a replacement. The CLI keeps zero X
 dependencies so it still works headless and over a serial console; both link the
-same `toolbox.o`. There is no protocol code in `gui_motif.c` at all — only
+same `toolbox.o` and `wifi.o`. There is no protocol code in `gui_motif.c` at all — only
 widgets and the open/act/close sequence around each core call, so the two front
 ends cannot drift.
 
-**Layout:** menu bar (File / Device / Help) over a paned window — upper pane is
-the bus scan, lower pane is either the `/shared` listing or the CD images
-(radio-selected) — with a status line in the MainWindow message area. Full
-coverage of the CLI: `-b` (Rescan), `-i` (Interrogate), `-t` (Emulated Targets),
-`-s`/`-l` (the content pane), `-g` (Get File, prompts for an output dir), `-p`
-(Put File, file-selection dialog), `-c` (Switch To CD), `-D`/`-d` (the Debug
-menu items), `-F` (a Force detection toggle that rescans).
+**Layout:** menu bar (File / Device / Wi-Fi / Help) over a paned window — upper
+pane is the bus scan, lower pane is the `/shared` listing, the CD images or the
+Wi-Fi networks (radio-selected) — with a status line in the MainWindow message
+area. Full coverage of the CLI: `-b` (Rescan), `-i` (Interrogate), `-t`
+(Emulated Targets), `-s`/`-l`/`-w` (the content pane), `-g` (Get File, prompts
+for an output dir), `-p` (Put File, file-selection dialog), `-c` (Switch To CD),
+`-D`/`-d` (the Debug menu items), `-F` (a Force detection toggle that rescans),
+`-W` (Wi-Fi ▸ Current Network) and `-j`/`-k` (the Join dialog).
 
 **Operation buttons are gated on `confirmed`**, not on `claims` — a device that
 advertised the toolbox but failed 0xD9 leaves them greyed, and the dialog
 explains which of the two stages it failed. Same rule as the CLI, surfaced.
+
+**Wi-Fi is gated on something else entirely**, and has to be: `wifi_index()`
+finds the Wi-Fi row rather than using the selected one, because the selected
+device is by definition *not* the radio (different target — see the Wi-Fi
+detection section). Wi-Fi therefore gets its own `require_wifi()`/`open_wifi()`
+pair and its own menu rather than more entries under Device, which would imply
+it acts on the selection.
+
+Three Wi-Fi-specific pieces of GUI behaviour worth preserving:
+
+- **Switching the lower pane to Wi-Fi does not scan.** The other two listings are
+  one quick command; a scan is seconds of radio time during which the core
+  blocks and the event loop stops. Clicking a radio button should not do that,
+  so it waits for Refresh (or Wi-Fi ▸ Scan For Networks).
+- **`set_busy()` exists because the freeze is unavoidable.** It sets the watch
+  cursor and pushes the status text out with `XmUpdateDisplay()` — the expose
+  that would normally paint it cannot be processed until the core returns.
+- **The password field masks by hand.** Motif 1.2 has no password widget, so an
+  `XmNmodifyVerifyCallback` applies each edit to `join_key_text` (using the
+  callback's `startPos`/`endPos`/`text`, which is exact for insert, delete,
+  replace and paste alike) and then overwrites the inserted characters with
+  `*` before Motif draws them. Anything that doesn't add up sets `doit = False`
+  rather than risking a password nobody typed. The buffer is wiped after use.
 
 **Column widths are computed, not hardcoded.** `scan_bus()` measures the longest
 path and type string it actually got, builds the `sprintf` format from those, and
@@ -606,6 +699,22 @@ selects it on IRIX and it would not compile there.
   o32 build driven by the prebuilt macOS pair). `scripts/fetch-iris.sh`
   extracts layout-tolerantly and fails with the exact workaround if an old
   tag is pinned.
+- **Wi-Fi is written from the firmware source and two host implementations, and
+  has NOT yet been run against real hardware.** The protocol was taken from
+  BlueSCSI's `lib/SCSI2SD/src/firmware/network.c` / `network.h` and
+  cross-checked against jcs's Macintosh `wifi_da` and SonnyJim's `bswifi`; the
+  mock bus in `make test` covers the whole path end to end, but a board with a
+  radio is still the real test. SonnyJim's own note on `bswifi` — "mostly
+  working apart from info command not returning BSSID correctly" — is worth
+  checking here too: this implementation reads the BSSID from bytes 64–69 of
+  the entry, which is where `network.h` puts it.
+- **Wi-Fi limits are structural, not ours:** 63-character network names and
+  passwords (the wire fields are 64 bytes *including* the terminator) and at
+  most 10 networks per scan (`WIFI_NETWORK_LIST_ENTRY_COUNT`).
+- **DaynaPort drivers on 5.3 are a separate, later job.** The Wi-Fi commands
+  work regardless — they are plain vendor SCSI commands to the network target,
+  and need no networking stack on the host. Configuring the link once joined
+  is what needs the driver.
 - **32-char filename limit** on `/shared` listings: structural to the protocol
   (`ToolboxFileEntry.name` is 32 bytes); not a bug.
 - **Firmware `SEND_FILE_10` offset semantics:** the documented spec says

@@ -2,7 +2,7 @@ project('irixscsitb', 'c')
 
 # CLI front end + protocol core. The Motif GUI (gui_motif.c) is IRIX-only and
 # built from the Makefile; there is no meson target for it.
-srcs = [ 'irixscsitb.c', 'toolbox.c', 'version.c' ]
+srcs = [ 'irixscsitb.c', 'toolbox.c', 'wifi.c', 'version.c' ]
 
 # Build identification (see CLAUDE.md "Build identification"). version.c is
 # the only file that includes these two generated headers:

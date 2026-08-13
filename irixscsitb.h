@@ -52,6 +52,81 @@
 #define TOOLBOX_COUNT_CDS      0xDA
 #define OPEN_RETRO_SCSI_TOO_MANY_FILES 0x0001
 
+/*
+ * Toolbox Wi-Fi control, a SECOND command family living on a SECOND target.
+ *
+ * Everything above (0xD0-0xDA) is answered by the emulated disk/CD. The Wi-Fi
+ * commands are not: they are answered only by the firmware's emulated NETWORK
+ * target - the DaynaPort SCSI/Link - which is a different SCSI ID with its own
+ * device node. Sending 0x1C to the disk gets you nothing. See wifi.c.
+ *
+ * Two things about the CDB are easy to get wrong, and both are worth stating
+ * plainly because the upstream firmware documentation has them wrong:
+ *
+ *   - the CDB is SIX bytes, not the ten every other toolbox command uses;
+ *   - the subcommand is in CDB[1] and the transfer length is a big-endian
+ *     16-bit value in CDB[3..4].
+ *
+ * The firmware's own source is the authority here: network.c dispatches on
+ * `scsiDev.cdb[1]` and computes `size = (scsiDev.cdb[3] << 8) + scsiDev.cdb[4]`,
+ * even though the comment directly above that switch says cdb[2]. Both working
+ * host implementations (jcs's Macintosh wifi_da and SonnyJim's bswifi) agree
+ * with the code rather than the comment.
+ */
+#define SCSI_NETWORK_WIFI_CMD  0x1C
+#define WIFI_CMD_SCAN          0x01  /* start a scan            -> 1 byte in  */
+#define WIFI_CMD_COMPLETE      0x02  /* has the scan finished?  -> 1 byte in  */
+#define WIFI_CMD_SCAN_RESULTS  0x03  /* fetch the network list  -> N bytes in */
+#define WIFI_CMD_INFO          0x04  /* the current network     -> 76 bytes in*/
+#define WIFI_CMD_JOIN          0x05  /* associate               -> 130 out    */
+
+/* Six, not SCSI_CMD_LENGTH. Getting this wrong is the classic failure here. */
+#define WIFI_CDB_LENGTH 6
+
+/*
+ * Wire sizes. These are the firmware's packed structs (network.h):
+ *
+ *   wifi_network_entry {ssid[64]; bssid[6]; int8 rssi; u8 channel; u8 flags;
+ *                       u8 _padding;}                              = 74 bytes
+ *   wifi_join_request  {ssid[64]; key[64]; u8 channel; u8 _padding;} = 130 bytes
+ *
+ * They are decoded and encoded byte by byte rather than memcpy'd into a C
+ * struct: __attribute__((packed)) is a GCC extension MIPSpro does not have, so
+ * a struct declared here would be free to carry padding the wire format has no
+ * room for.
+ */
+#define WIFI_ENTRY_SIZE      74
+#define WIFI_JOIN_SIZE      130
+#define WIFI_SSID_MAX        64      /* field width; 63 chars + NUL usable */
+#define WIFI_KEY_MAX         64
+#define WIFI_BSSID_LEN        6
+
+/* Field offsets inside one wire entry. */
+#define WIFI_OFF_SSID         0
+#define WIFI_OFF_BSSID       64
+#define WIFI_OFF_RSSI        70
+#define WIFI_OFF_CHANNEL     71
+#define WIFI_OFF_FLAGS       72
+
+/* flags byte: the firmware defines exactly one bit. */
+#define WIFI_FLAG_AUTH     0x01
+
+/*
+ * The firmware keeps ten scan slots (WIFI_NETWORK_LIST_ENTRY_COUNT) and both
+ * SCAN_RESULTS and INFO prefix their reply with a big-endian 16-bit byte count
+ * that does NOT include the two count bytes themselves.
+ */
+#define WIFI_MAX_NETWORKS    10
+#define WIFI_LEN_PREFIX       2
+/* What we ask SCAN_RESULTS for - the same 2048 the Macintosh DA requests. */
+#define WIFI_SCAN_BUF_SIZE 2048
+
+/*
+ * A scan takes a few seconds of real radio time. Poll COMPLETE (0x02) once a
+ * second up to this many times; SCAN_RESULTS returns CHECK CONDITION if it is
+ * asked before the scan finishes, so waiting is not optional.
+ */
+#define WIFI_SCAN_TIMEOUT_SEC 20
 
 #define TOOLBOX_API_VER 1
 
@@ -105,7 +180,10 @@ enum {
 	MODE_DEBUG,
 	MODE_DEBUG_GET,
 	MODE_DEVICES,
-	MODE_SCAN
+	MODE_SCAN,
+	MODE_WIFI_SCAN,
+	MODE_WIFI_INFO,
+	MODE_WIFI_JOIN
 };
 
 enum {
@@ -189,7 +267,29 @@ typedef struct {
 	const char *type_name;      /* INQUIRY peripheral device type, printable */
 	int claims;
 	int confirmed;
+	int wifi;                   /* answered the Wi-Fi INFO command (0x1C/0x04) */
 } ToolboxScanEntry;
+
+/*
+ * Room for the markers a scan row can carry. Current firmware answers the
+ * toolbox and the Wi-Fi commands on separate targets, so in practice a row gets
+ * at most one - but the front ends render whatever a device actually claims
+ * rather than relying on that, so this is sized for all of them at once.
+ */
+#define SCAN_TAG_MAX 64
+
+/*
+ * One Wi-Fi network, decoded from the 74-byte wire entry. Held in host types
+ * rather than as the raw struct so front ends never have to know the layout:
+ * rssi is signed on the wire and must not arrive here as 200-odd.
+ */
+typedef struct {
+	char ssid[WIFI_SSID_MAX + 1];       /* always NUL-terminated */
+	unsigned char bssid[WIFI_BSSID_LEN];
+	int rssi;                           /* dBm, negative */
+	int channel;
+	unsigned char flags;                /* WIFI_FLAG_AUTH */
+} ToolboxWifiNetwork;
 
 /*
  * Core toolbox API (toolbox.c). Everything here returns data or a status and
@@ -269,3 +369,90 @@ int toolbox_detect(int dev, ToolboxDetect *out);
  * a front end can show each result as it arrives instead of only at the end.
  */
 int toolbox_probe(const char *path, ToolboxScanEntry *out);
+
+/*
+ * Wi-Fi (wifi.c). Same rules as the rest of the core: these return data or a
+ * status and never print a result, so the CLI and the GUI can share them.
+ *
+ * Every one of these must be given a device node for the emulated NETWORK
+ * target, NOT for the disk the same BlueSCSI/ZuluSCSI is emulating. The disk
+ * does not implement 0x1C. toolbox_wifi_find() below is how you get that path
+ * without making the operator work it out.
+ */
+
+/*
+ * Is this open node the Wi-Fi target? Two stages, exactly like the toolbox:
+ * the device has to claim it (INQUIRY product "SCSI/Link", covering both the
+ * "Dayna" DaynaPort and "AmigaNET" AmigaWIFI personalities) and then answer
+ * WIFI_CMD_INFO with a well-formed 76-byte reply. -F (force_toolbox) skips the
+ * claim and tests every node directly, for firmware we don't know by name.
+ *
+ * identity is the trimmed INQUIRY string if the caller already has one (a bus
+ * scan does), or NULL to have this fetch it - passing what you have saves the
+ * node a second INQUIRY. With probe non-zero the commands are sent quietly and
+ * without retries, which is what a bus scan wants. Returns 1 for yes, 0 for no.
+ */
+int toolbox_wifi_probe(int dev, const char *identity, int probe);
+
+/*
+ * Walk the host's generic SCSI nodes and return the first one that answers as
+ * a Wi-Fi target. Fills path (required) and returns 0, or returns -1 if the bus
+ * has none. This is what makes the Wi-Fi options usable without a device path:
+ * the network target is a different SCSI ID from the disk, and expecting the
+ * operator to know which is asking them to read the firmware's config file.
+ */
+int toolbox_wifi_find(char *path, int pathlen);
+
+/*
+ * WIFI_CMD_SCAN (0x01): ask the radio to start scanning. Returns 0 if the scan
+ * was accepted, -1 if the command failed or the firmware refused.
+ */
+int toolbox_wifi_scan_start(int dev);
+
+/*
+ * WIFI_CMD_COMPLETE (0x02): 1 if the scan has finished, 0 if it is still
+ * running, -1 if the command failed.
+ */
+int toolbox_wifi_scan_done(int dev);
+
+/*
+ * Start a scan and block until it finishes (or timeout_sec elapses). Asking for
+ * results early earns a CHECK CONDITION, so this is the sequence every caller
+ * actually wants. Returns 0 when the scan completed, -1 on failure or timeout.
+ */
+int toolbox_wifi_scan(int dev, int timeout_sec);
+
+/*
+ * WIFI_CMD_SCAN_RESULTS (0x03): fill nets[] with at most max networks from the
+ * last completed scan. Returns how many were written, or -1 on failure.
+ */
+int toolbox_wifi_results(int dev, ToolboxWifiNetwork *nets, int max);
+
+/*
+ * WIFI_CMD_INFO (0x04): the network currently joined. Returns 0 on success and
+ * fills *out; an out->ssid of "" means the radio is not associated.
+ */
+int toolbox_wifi_info(int dev, ToolboxWifiNetwork *out);
+
+/*
+ * WIFI_CMD_JOIN (0x05): associate with ssid using key (pass "" or NULL for an
+ * open network). channel 0 means "let the firmware pick". This is the one
+ * Wi-Fi command that writes, so dev must have been opened read/write.
+ * Returns 0 if the request was accepted by the firmware.
+ *
+ * NOTE the firmware only ACCEPTS the request here - it does not report whether
+ * the association succeeded. Confirm with toolbox_wifi_info() afterwards.
+ */
+int toolbox_wifi_join(int dev, const char *ssid, const char *key, int channel);
+
+/* "WPA/WEP" or "open", from the flags byte. */
+const char *wifi_auth_name(unsigned char flags);
+
+/* Format a BSSID as aa:bb:cc:dd:ee:ff. out must hold at least 18 bytes. */
+void wifi_bssid_str(const unsigned char *bssid, char *out, int outlen);
+
+/*
+ * Signal strength as a 0-4 bar count, for a front end that wants to show one.
+ * The thresholds are the usual dBm breakpoints (-55/-65/-75/-85).
+ */
+int wifi_signal_bars(int rssi);

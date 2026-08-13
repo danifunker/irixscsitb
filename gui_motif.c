@@ -48,7 +48,9 @@
 #include <Xm/MessageB.h>
 #include <Xm/FileSB.h>
 #include <Xm/SelectioB.h>
+#include <Xm/TextF.h>
 #include <X11/Shell.h>
+#include <X11/cursorfont.h>
 
 #include "irixscsitb.h"
 
@@ -101,17 +103,29 @@ static String fallback_resources[] = {
 	"*debugOn.labelString: Turn Debug On",
 	"*debugOff.labelString: Turn Debug Off",
 	"*forceToggle.labelString: Force detection (-F)",
+	"*wifi.labelString: Wi-Fi",
+	"*wifiScan.labelString: Scan For Networks",
+	"*wifiInfo.labelString: Current Network...",
+	"*wifiJoinItem.labelString: Join Network...",
 	"*help.labelString: Help",
 	"*about.labelString: About...",
 	"*busFrameLabel.labelString: SCSI bus",
 	"*modeShared.labelString: Shared files",
 	"*modeCds.labelString: CD images",
+	"*modeWifi.labelString: Wi-Fi networks",
 	"*refresh.labelString: Refresh",
 	"*getFile.labelString: Get File...",
 	"*putFile.labelString: Put File...",
 	"*switchCd.labelString: Switch To CD",
+	"*joinWifi.labelString: Join...",
 	"*rescanButton.labelString: Rescan",
 	"*status.labelString: Ready.",
+	/* The join dialog's own labels, so they can be re-worded or localised
+	 * from app-defaults like every other string in this file. */
+	"*joinSsidLabel.labelString: Network name (SSID):",
+	"*joinKeyLabel.labelString: Password (leave blank if open):",
+	"*joinOk.labelString: Join",
+	"*joinCancel.labelString: Cancel",
 	NULL
 };
 
@@ -192,12 +206,14 @@ static Pixmap icon_pixmap_for(Widget w)
 /* Which listing the lower pane is showing. */
 #define CONTENT_SHARED 0
 #define CONTENT_CDS    1
+#define CONTENT_WIFI   2
 
 static Widget toplevel;
 static Widget device_list_w;    /* upper pane: devices on the bus */
-static Widget content_list_w;   /* lower pane: /shared files or CD images */
+static Widget content_list_w;   /* lower pane: /shared, CD images or Wi-Fi */
 static Widget status_w;
-static Widget get_btn, put_btn, cd_btn, refresh_btn;
+static Widget get_btn, put_btn, cd_btn, join_btn, refresh_btn;
+static Widget mode_wifi_btn;    /* so the Wi-Fi menu can flip the lower pane */
 static Widget info_dialog, error_dialog, dir_dialog, file_dialog;
 
 static ToolboxScanEntry scan[MAX_SCAN_DEVICES];
@@ -207,6 +223,10 @@ static int sel_dev = -1;        /* index into scan[], -1 = nothing selected */
 static ToolboxFileEntry entries[MAX_FILES];
 static int entries_n;
 static int content_mode = CONTENT_SHARED;
+
+/* Results of the last Wi-Fi scan, shown when content_mode is CONTENT_WIFI. */
+static ToolboxWifiNetwork wifi_nets[WIFI_MAX_NETWORKS];
+static int wifi_nets_n;
 
 /*
  * Set only while re-entering do_switch_cd() from the "Switch Anyway" button of
@@ -433,20 +453,137 @@ static int require_toolbox(void)
 	return 0;
 }
 
+/*
+ * Which bus row carries the Wi-Fi radio.
+ *
+ * This is a SEPARATE question from "which device is selected", and has to be,
+ * because the two never coincide: the firmware answers the Wi-Fi commands on
+ * its emulated network target and the toolbox commands on the disk, so the row
+ * the user picked to browse /shared is by definition not the row that can scan
+ * for access points. Honour an explicit pick of the Wi-Fi row if there is one,
+ * otherwise just find it - making the operator hunt for it would be asking them
+ * to know something only the firmware's config file says.
+ */
+static int wifi_index(void)
+{
+	int i;
+
+	if (sel_dev >= 0 && sel_dev < scan_n && scan[sel_dev].wifi)
+		return sel_dev;
+	for (i = 0; i < scan_n; i++)
+		if (scan[i].wifi)
+			return i;
+	return -1;
+}
+
+/* Guard for the Wi-Fi operations, the counterpart of require_toolbox(). */
+static int require_wifi(void)
+{
+	if (wifi_index() >= 0)
+		return 1;
+
+	show_msg("No Wi-Fi device",
+		 "No Wi-Fi device was found on the SCSI bus.\n\n"
+		 "The Wi-Fi commands are answered by the emulated NETWORK\n"
+		 "target - a DaynaPort SCSI/Link - and not by the disk or CD\n"
+		 "the same board is emulating. Check that a network device is\n"
+		 "enabled in the firmware's configuration and that the board\n"
+		 "has a radio, then rescan the bus.\n\n"
+		 "Device > Emulated Targets... lists what the firmware is\n"
+		 "emulating on each SCSI ID.", 1);
+	return 0;
+}
+
+/* Open the Wi-Fi target. Only Join writes; scan and info are read-only. */
+static int open_wifi(int readonly)
+{
+	char msg[SCSI_PATH_MAX + 256];
+	int idx = wifi_index();
+	int dev;
+
+	if (idx < 0)
+		return -1;
+
+	dev = scsi_open(scan[idx].path, readonly);
+	if (dev < 0 && !readonly)
+		dev = scsi_open(scan[idx].path, 1);
+	if (dev < 0) {
+		sprintf(msg, "Cannot open the Wi-Fi device %s.\n\n%s", scan[idx].path,
+			geteuid() == 0 ? "The device refused to open." :
+					 "You are not running as root - that is almost\n"
+					 "certainly why. The /dev/scsi nodes are root-owned.");
+		show_msg("Open failed", msg, 1);
+		return -1;
+	}
+	return dev;
+}
+
+/*
+ * Say we are busy, and mean it.
+ *
+ * A Wi-Fi scan is seconds of real radio time and the core blocks for all of
+ * it, so the event loop stops: without this the window simply freezes mid-click
+ * with no explanation. The status text is pushed out with XmUpdateDisplay()
+ * because the expose that would normally paint it cannot be processed until we
+ * come back.
+ */
+static void set_busy(const char *text, int busy)
+{
+	static Cursor watch_cursor = None;
+	Display *dpy = XtDisplay(toplevel);
+
+	if (text != NULL)
+		set_status(text);
+
+	if (dpy != NULL && XtIsRealized(toplevel)) {
+		if (busy) {
+			if (watch_cursor == None)
+				watch_cursor = XCreateFontCursor(dpy, XC_watch);
+			if (watch_cursor != None)
+				XDefineCursor(dpy, XtWindow(toplevel), watch_cursor);
+		} else {
+			XUndefineCursor(dpy, XtWindow(toplevel));
+		}
+	}
+
+	XmUpdateDisplay(toplevel);
+}
+
 /* Grey out the operation buttons unless the selection can actually do them. */
 static void update_sensitivity(void)
 {
 	int usable = (sel_dev >= 0 && scan[sel_dev].confirmed);
+	int has_wifi = (wifi_index() >= 0);
 
-	XtSetSensitive(refresh_btn, usable);
+	/* Refresh means "re-read the lower pane", so in Wi-Fi mode it is the
+	 * Wi-Fi device that has to be present, not a toolbox one. */
+	XtSetSensitive(refresh_btn, content_mode == CONTENT_WIFI ? has_wifi : usable);
 	XtSetSensitive(get_btn, usable && content_mode == CONTENT_SHARED);
 	XtSetSensitive(put_btn, usable);
 	XtSetSensitive(cd_btn, usable && content_mode == CONTENT_CDS);
+	XtSetSensitive(join_btn, has_wifi);
 }
 
 /* ------------------------------------------------------------------ *
  * bus scan
  * ------------------------------------------------------------------ */
+
+/*
+ * The markers on one bus row. Kept identical to the CLI's scan_tags(): the two
+ * front ends must describe a device the same way, and the two questions -
+ * "does it implement the toolbox" and "does it have a radio" - are independent,
+ * so they accumulate rather than compete.
+ */
+static void scan_tags(const ToolboxScanEntry *e, char *out)
+{
+	out[0] = '\0';
+	if (e->confirmed)
+		strcpy(out, "  [TOOLBOX]");
+	else if (e->claims)
+		strcpy(out, "  [claims toolbox, no 0xD9 answer]");
+	if (e->wifi)
+		strcat(out, "  [WIFI]");
+}
 
 /*
  * Scan the bus and render it. Column widths are computed from the rows we
@@ -455,17 +592,19 @@ static void update_sensitivity(void)
 static void scan_bus(void)
 {
 	char paths[MAX_SCAN_DEVICES][SCSI_PATH_MAX];
-	char line[SCSI_PATH_MAX + TOOLBOX_IDENTITY_MAX + 64];
-	char widest[SCSI_PATH_MAX + TOOLBOX_IDENTITY_MAX + 64];
+	char line[SCSI_PATH_MAX + TOOLBOX_IDENTITY_MAX + SCAN_TAG_MAX];
+	char widest[SCSI_PATH_MAX + TOOLBOX_IDENTITY_MAX + SCAN_TAG_MAX];
+	char tags[SCAN_TAG_MAX];
 	char fmt[32];
 	int count, i;
 	int w_path = 0, w_type = 0;
 	int len, best = 0;
-	int answered = 0, found = 0, unconfirmed = 0;
+	int answered = 0, found = 0, unconfirmed = 0, wifi = 0;
 
 	XmListDeleteAllItems(device_list_w);
 	XmListDeleteAllItems(content_list_w);
 	entries_n = 0;
+	wifi_nets_n = 0;
 	sel_dev = -1;
 	scan_n = 0;
 	widest[0] = '\0';
@@ -506,10 +645,11 @@ static void scan_bus(void)
 			found++;
 		else if (scan[i].claims)
 			unconfirmed++;
+		if (scan[i].wifi)
+			wifi++;
 
-		sprintf(line, fmt, scan[i].path, scan[i].type_name, scan[i].identity,
-			scan[i].confirmed ? "  [TOOLBOX]" :
-				(scan[i].claims ? "  [claims toolbox, no 0xD9 answer]" : ""));
+		scan_tags(&scan[i], tags);
+		sprintf(line, fmt, scan[i].path, scan[i].type_name, scan[i].identity, tags);
 		list_add(device_list_w, line);
 
 		len = (int)strlen(line);
@@ -524,6 +664,8 @@ static void scan_bus(void)
 	sprintf(line, "%d device(s) answered, %d toolbox-capable", answered, found);
 	if (unconfirmed > 0)
 		sprintf(line + strlen(line), " (%d claimed but failed 0xD9)", unconfirmed);
+	if (wifi > 0)
+		sprintf(line + strlen(line), ", %d with Wi-Fi", wifi);
 	strcat(line, ".");
 	if (answered == 0 && geteuid() != 0)
 		strcat(line, "  Not running as root - that is probably why.");
@@ -547,6 +689,95 @@ static void scan_bus(void)
  * content pane: /shared listing and CD images
  * ------------------------------------------------------------------ */
 
+/*
+ * One rendered row per Wi-Fi network. The bar meter is there so the list can be
+ * read without knowing that -30 dBm beats -80; the dBm is kept alongside it
+ * because it is the number you compare between rows.
+ */
+static void wifi_row(const ToolboxWifiNetwork *net, char *out, int ssid_width)
+{
+	char bssid[18];
+	char bars[8];
+	char fmt[64];
+	int n, i;
+
+	wifi_bssid_str(net->bssid, bssid, sizeof(bssid));
+
+	n = wifi_signal_bars(net->rssi);
+	for (i = 0; i < 4; i++)
+		bars[i] = (i < n) ? '#' : '.';
+	bars[4] = '\0';
+
+	sprintf(fmt, "%%-%ds  %%s  %%4d dBm  ch %%-3d  %%-8s  %%s", ssid_width);
+	sprintf(out, fmt, net->ssid, bars, net->rssi, net->channel,
+		wifi_auth_name(net->flags), bssid);
+}
+
+/*
+ * Scan for networks and show them in the lower pane. Blocking, by several
+ * seconds - see set_busy().
+ */
+static void refresh_wifi(void)
+{
+	char line[WIFI_SSID_MAX + 96];
+	char widest[WIFI_SSID_MAX + 96];
+	int dev, i, n, len, best = 0;
+	int w_ssid = 0;
+
+	XmListDeleteAllItems(content_list_w);
+	wifi_nets_n = 0;
+	widest[0] = '\0';
+
+	if (!require_wifi())
+		return;
+	dev = open_wifi(1);
+	if (dev < 0)
+		return;
+
+	set_busy("Scanning for Wi-Fi networks - this takes a few seconds...", 1);
+	n = (toolbox_wifi_scan(dev, WIFI_SCAN_TIMEOUT_SEC) == 0)
+		? toolbox_wifi_results(dev, wifi_nets, WIFI_MAX_NETWORKS)
+		: -1;
+	scsi_close(dev);
+	set_busy(NULL, 0);
+
+	if (n < 0) {
+		set_status("Wi-Fi scan failed.");
+		show_msg("Scan failed",
+			 "The Wi-Fi scan did not complete.\n\n"
+			 "The device accepted the scan command but never reported it\n"
+			 "finished, or refused to return the results. If the board has\n"
+			 "no radio fitted this is what that looks like.", 1);
+		return;
+	}
+	wifi_nets_n = n;
+
+	for (i = 0; i < n; i++) {
+		len = (int)strlen(wifi_nets[i].ssid);
+		if (len > w_ssid)
+			w_ssid = len;
+	}
+
+	for (i = 0; i < n; i++) {
+		wifi_row(&wifi_nets[i], line, w_ssid);
+		list_add(content_list_w, line);
+
+		len = (int)strlen(line);
+		if (len > best) {
+			best = len;
+			strcpy(widest, line);
+		}
+	}
+	fit_list_width(content_list_w, widest);
+
+	if (n == 0)
+		set_status("No Wi-Fi networks found.");
+	else {
+		sprintf(line, "%d Wi-Fi network(s). Select one and press Join.", n);
+		set_status(line);
+	}
+}
+
 static void refresh_content(void)
 {
 	char line[NAME_BUF_SIZE + 64];
@@ -554,6 +785,14 @@ static void refresh_content(void)
 	char fmt[48];
 	int dev, i, n, len, best = 0;
 	int w_name = 0;
+
+	/* Wi-Fi is a different target with a different gate, so it branches
+	 * before require_toolbox() - which would (correctly) reject the network
+	 * device for not implementing 0xD0-0xDA. */
+	if (content_mode == CONTENT_WIFI) {
+		refresh_wifi();
+		return;
+	}
 
 	XmListDeleteAllItems(content_list_w);
 	entries_n = 0;
@@ -899,6 +1138,310 @@ static void do_switch_cd(void)
 }
 
 /* ------------------------------------------------------------------ *
+ * Wi-Fi
+ * ------------------------------------------------------------------ */
+
+static Widget join_dialog, join_ssid_w, join_key_w;
+
+/*
+ * The password as actually typed. The text field itself only ever holds
+ * asterisks - see join_key_modify_cb() - so this is where the real characters
+ * live, and it is cleared as soon as the join has been sent.
+ */
+static char join_key_text[WIFI_KEY_MAX + 2];
+
+/* Device > Wi-Fi > Current Network. */
+static void do_wifi_info(void)
+{
+	ToolboxWifiNetwork net;
+	char text[WIFI_SSID_MAX + 384];
+	char bssid[18];
+	int dev, idx;
+
+	if (!require_wifi())
+		return;
+	idx = wifi_index();
+	dev = open_wifi(1);
+	if (dev < 0)
+		return;
+
+	if (toolbox_wifi_info(dev, &net) != 0) {
+		scsi_close(dev);
+		show_msg("Wi-Fi", "Could not read the current Wi-Fi network (0x1C/0x04).", 1);
+		return;
+	}
+	scsi_close(dev);
+
+	if (net.ssid[0] == '\0') {
+		sprintf(text, "The Wi-Fi device at\n\n    %s\n\n"
+			      "is not joined to any network.\n\n"
+			      "Switch the lower pane to \"Wi-Fi networks\" and press\n"
+			      "Refresh to scan, then select one and press Join.",
+			scan[idx].path);
+		show_msg("Wi-Fi", text, 0);
+		set_status("Not joined to a Wi-Fi network.");
+		return;
+	}
+
+	wifi_bssid_str(net.bssid, bssid, sizeof(bssid));
+	sprintf(text,
+		"Device:     %s\n\n"
+		"Network:    %s\n"
+		"BSSID:      %s\n"
+		"Signal:     %d dBm  (%d of 4 bars)\n"
+		"Channel:    %d\n"
+		"Security:   %s",
+		scan[idx].path, net.ssid, bssid, net.rssi,
+		wifi_signal_bars(net.rssi), net.channel, wifi_auth_name(net.flags));
+
+	show_msg("Current Wi-Fi Network", text, 0);
+	set_status("Read the current Wi-Fi network.");
+}
+
+/*
+ * Send a join request and then find out whether it took.
+ *
+ * The firmware answers the JOIN command as soon as it has handed the
+ * credentials to the radio - GOOD means "request accepted", not "associated" -
+ * so the only honest way to report success is to wait and then ask what the
+ * radio is actually joined to.
+ */
+static void do_wifi_join(const char *ssid, const char *key)
+{
+	ToolboxWifiNetwork net;
+	char text[(2 * WIFI_SSID_MAX) + 384];
+	char shown[WIFI_SSID_MAX + 1];
+	int dev;
+
+	if (!require_wifi())
+		return;
+
+	copy_clamped(shown, (int)sizeof(shown), ssid);
+	if (shown[0] == '\0') {
+		show_msg("Join Wi-Fi", "Enter the name of the network to join.", 1);
+		return;
+	}
+
+	dev = open_wifi(0);
+	if (dev < 0)
+		return;
+
+	if (toolbox_wifi_join(dev, ssid, key, 0) != 0) {
+		scsi_close(dev);
+		show_msg("Join failed",
+			 "The device rejected the join request (0x1C/0x05).\n\n"
+			 "The network name and password are limited to 63\n"
+			 "characters each by the protocol.", 1);
+		return;
+	}
+
+	set_busy("Joining - waiting for the radio to associate...", 1);
+	sleep(5);
+	if (toolbox_wifi_info(dev, &net) != 0)
+		net.ssid[0] = '\0';
+	scsi_close(dev);
+	set_busy(NULL, 0);
+
+	if (net.ssid[0] == '\0') {
+		sprintf(text, "The join request for\n\n    %s\n\nwas accepted, but the device is not "
+			      "associated yet.\n\nCheck the password, or look again in a few seconds with\n"
+			      "Wi-Fi > Current Network...", shown);
+		show_msg("Not joined yet", text, 1);
+		set_status("Join request sent; not associated yet.");
+		return;
+	}
+	if (strcmp(net.ssid, ssid) != 0) {
+		sprintf(text, "The device is still joined to\n\n    %s\n\nrather than the network "
+			      "requested. The join was not taken.", net.ssid);
+		show_msg("Not joined", text, 1);
+		set_status("Join request sent; the device kept its old network.");
+		return;
+	}
+
+	sprintf(text, "Joined:\n\n    %s\n\nSignal %d dBm on channel %d (%s).",
+		net.ssid, net.rssi, net.channel, wifi_auth_name(net.flags));
+	show_msg("Joined", text, 0);
+	set_status("Joined the Wi-Fi network.");
+}
+
+/*
+ * Echo the password field as asterisks.
+ *
+ * Motif 1.2 has no password widget, so the field is kept in step by hand: the
+ * verify callback is told exactly which span of the visible text is being
+ * replaced and with what, so applying the identical edit to join_key_text keeps
+ * the two in sync for inserts, deletes, replacements and pastes alike - and
+ * then the inserted characters are overwritten with '*' before Motif draws
+ * them. Rejecting the edit outright is the safe response to anything that
+ * doesn't add up, since a mismatch would mean sending a password nobody typed.
+ */
+/* ARGSUSED */
+static void join_key_modify_cb(Widget w, XtPointer client, XtPointer call)
+{
+	XmTextVerifyCallbackStruct *cbs = (XmTextVerifyCallbackStruct *)call;
+	char tail[WIFI_KEY_MAX + 2];
+	int len = (int)strlen(join_key_text);
+	int start = (int)cbs->startPos;
+	int end = (int)cbs->endPos;
+	int ins = (cbs->text != NULL) ? (int)cbs->text->length : 0;
+	int i;
+
+	if (start < 0 || end < start || start > len || end > len) {
+		cbs->doit = False;
+		return;
+	}
+	/* Same 63 the field's XmNmaxLength enforces and toolbox_wifi_join()
+	 * insists on - the wire field is 64 bytes including its terminator. */
+	if (len - (end - start) + ins > WIFI_KEY_MAX - 1) {
+		cbs->doit = False;
+		return;
+	}
+
+	copy_clamped(tail, (int)sizeof(tail), join_key_text + end);
+	if (ins > 0)
+		memcpy(join_key_text + start, cbs->text->ptr, ins);
+	strcpy(join_key_text + start + ins, tail);
+
+	for (i = 0; i < ins; i++)
+		cbs->text->ptr[i] = '*';
+}
+
+/* ARGSUSED */
+static void join_ok_cb(Widget w, XtPointer client, XtPointer call)
+{
+	char ssid[WIFI_SSID_MAX + 2];
+	char key[WIFI_KEY_MAX + 2];
+	char *typed;
+
+	typed = XmTextFieldGetString(join_ssid_w);
+	copy_clamped(ssid, (int)sizeof(ssid), typed != NULL ? typed : "");
+	if (typed != NULL)
+		XtFree(typed);
+
+	copy_clamped(key, (int)sizeof(key), join_key_text);
+
+	XtUnmanageChild(join_dialog);
+
+	/* Don't leave the password sitting in the widget tree afterwards. */
+	memset(join_key_text, 0, sizeof(join_key_text));
+	XmTextFieldSetString(join_key_w, "");
+
+	do_wifi_join(ssid, key);
+	memset(key, 0, sizeof(key));
+}
+
+/* ARGSUSED */
+static void join_cancel_cb(Widget w, XtPointer client, XtPointer call)
+{
+	memset(join_key_text, 0, sizeof(join_key_text));
+	XmTextFieldSetString(join_key_w, "");
+	XtUnmanageChild(join_dialog);
+}
+
+/*
+ * The join dialog: two fields and two buttons.
+ *
+ * Built as a plain form dialog rather than an XmPromptDialog because a prompt
+ * only has one text field and this needs two - and a network name with no way
+ * to type the password beside it would be a dialog you cannot finish.
+ */
+static void build_join_dialog(void)
+{
+	Widget l1, l2, sep, ok, cancel;
+
+	join_dialog = XmCreateFormDialog(toplevel, "joinDialog", NULL, 0);
+	XtVaSetValues(join_dialog, XmNautoUnmanage, False, NULL);
+
+	l1 = XtVaCreateManagedWidget("joinSsidLabel", xmLabelWidgetClass, join_dialog,
+				     XmNtopAttachment, XmATTACH_FORM,
+				     XmNleftAttachment, XmATTACH_FORM,
+				     XmNalignment, XmALIGNMENT_BEGINNING,
+				     NULL);
+	join_ssid_w = XtVaCreateManagedWidget("joinSsid", xmTextFieldWidgetClass, join_dialog,
+					      XmNtopAttachment, XmATTACH_WIDGET,
+					      XmNtopWidget, l1,
+					      XmNleftAttachment, XmATTACH_FORM,
+					      XmNrightAttachment, XmATTACH_FORM,
+					      XmNcolumns, 28,
+					      XmNmaxLength, WIFI_SSID_MAX - 1,
+					      NULL);
+
+	l2 = XtVaCreateManagedWidget("joinKeyLabel", xmLabelWidgetClass, join_dialog,
+				     XmNtopAttachment, XmATTACH_WIDGET,
+				     XmNtopWidget, join_ssid_w,
+				     XmNleftAttachment, XmATTACH_FORM,
+				     XmNalignment, XmALIGNMENT_BEGINNING,
+				     NULL);
+	join_key_w = XtVaCreateManagedWidget("joinKey", xmTextFieldWidgetClass, join_dialog,
+					     XmNtopAttachment, XmATTACH_WIDGET,
+					     XmNtopWidget, l2,
+					     XmNleftAttachment, XmATTACH_FORM,
+					     XmNrightAttachment, XmATTACH_FORM,
+					     XmNcolumns, 28,
+					     XmNmaxLength, WIFI_KEY_MAX - 1,
+					     NULL);
+	XtAddCallback(join_key_w, XmNmodifyVerifyCallback, join_key_modify_cb, NULL);
+
+	sep = XtVaCreateManagedWidget("joinSep", xmSeparatorWidgetClass, join_dialog,
+				      XmNtopAttachment, XmATTACH_WIDGET,
+				      XmNtopWidget, join_key_w,
+				      XmNleftAttachment, XmATTACH_FORM,
+				      XmNrightAttachment, XmATTACH_FORM,
+				      NULL);
+
+	ok = XtVaCreateManagedWidget("joinOk", xmPushButtonWidgetClass, join_dialog,
+				     XmNtopAttachment, XmATTACH_WIDGET,
+				     XmNtopWidget, sep,
+				     XmNleftAttachment, XmATTACH_FORM,
+				     XmNbottomAttachment, XmATTACH_FORM,
+				     NULL);
+	XtAddCallback(ok, XmNactivateCallback, join_ok_cb, NULL);
+
+	cancel = XtVaCreateManagedWidget("joinCancel", xmPushButtonWidgetClass, join_dialog,
+					 XmNtopAttachment, XmATTACH_WIDGET,
+					 XmNtopWidget, sep,
+					 XmNrightAttachment, XmATTACH_FORM,
+					 XmNbottomAttachment, XmATTACH_FORM,
+					 NULL);
+	XtAddCallback(cancel, XmNactivateCallback, join_cancel_cb, NULL);
+
+	XtVaSetValues(join_dialog, XmNdefaultButton, ok, NULL);
+}
+
+/*
+ * Open the join dialog, pre-filled from the selected network if the lower pane
+ * is showing a scan - that is the common case, and retyping an SSID you can see
+ * on screen is exactly the kind of thing that gets typed wrong.
+ */
+static void open_join_dialog(void)
+{
+	XmString xt;
+	int row;
+
+	if (!require_wifi())
+		return;
+
+	if (join_dialog == NULL)
+		build_join_dialog();
+
+	memset(join_key_text, 0, sizeof(join_key_text));
+	XmTextFieldSetString(join_key_w, "");
+	XmTextFieldSetString(join_ssid_w, "");
+
+	if (content_mode == CONTENT_WIFI) {
+		row = list_selection(content_list_w);
+		if (row >= 0 && row < wifi_nets_n)
+			XmTextFieldSetString(join_ssid_w, wifi_nets[row].ssid);
+	}
+
+	xt = XmStringCreateLtoR("Join Wi-Fi Network", XmSTRING_DEFAULT_CHARSET);
+	XtVaSetValues(join_dialog, XmNdialogTitle, xt, NULL);
+	XmStringFree(xt);
+
+	XtManageChild(join_dialog);
+}
+
+/* ------------------------------------------------------------------ *
  * callbacks
  * ------------------------------------------------------------------ */
 
@@ -917,10 +1460,13 @@ static void device_select_cb(Widget w, XtPointer client, XtPointer call)
 
 	XmListDeleteAllItems(content_list_w);
 	entries_n = 0;
+	wifi_nets_n = 0;
 	update_sensitivity();
 
 	if (scan[sel_dev].confirmed)
 		sprintf(msg, "Selected %s - toolbox ready.", scan[sel_dev].path);
+	else if (scan[sel_dev].wifi)
+		sprintf(msg, "%s is the Wi-Fi device - use the Wi-Fi menu.", scan[sel_dev].path);
 	else if (scan[sel_dev].claims)
 		sprintf(msg, "%s claims the toolbox but failed 0xD9 - not usable.",
 			scan[sel_dev].path);
@@ -952,7 +1498,22 @@ static void mode_cb(Widget w, XtPointer client, XtPointer call)
 	content_mode = (int)(long)client;
 	XmListDeleteAllItems(content_list_w);
 	entries_n = 0;
+	wifi_nets_n = 0;
 	update_sensitivity();
+
+	/*
+	 * Switching to Wi-Fi does NOT scan. The other two listings are a single
+	 * quick command, but a scan is seconds of radio time that freezes the
+	 * window, and nobody expects clicking a radio button to do that - so it
+	 * waits to be asked.
+	 */
+	if (content_mode == CONTENT_WIFI) {
+		set_status(wifi_index() >= 0 ?
+			   "Press Refresh to scan for Wi-Fi networks." :
+			   "No Wi-Fi device found on this bus.");
+		return;
+	}
+
 	if (sel_dev >= 0 && scan[sel_dev].confirmed)
 		refresh_content();
 }
@@ -1005,6 +1566,38 @@ static void switch_cd_cb(Widget w, XtPointer client, XtPointer call)
 	do_switch_cd();
 }
 
+/*
+ * Wi-Fi > Scan For Networks. The results belong in the lower pane, so this
+ * flips the pane to Wi-Fi rather than opening a listing in a dialog that would
+ * then have nowhere to Join from.
+ */
+/* ARGSUSED */
+static void wifi_scan_cb(Widget w, XtPointer client, XtPointer call)
+{
+	if (!require_wifi())
+		return;
+	/* notify True on purpose: the RowColumn only unsets the sibling
+	 * toggles when it is told, so a silent SetState would leave two of
+	 * the three radio buttons looking selected. */
+	if (mode_wifi_btn != NULL)
+		XmToggleButtonSetState(mode_wifi_btn, True, True);
+	content_mode = CONTENT_WIFI;
+	update_sensitivity();
+	refresh_content();
+}
+
+/* ARGSUSED */
+static void wifi_info_cb(Widget w, XtPointer client, XtPointer call)
+{
+	do_wifi_info();
+}
+
+/* ARGSUSED */
+static void wifi_join_cb(Widget w, XtPointer client, XtPointer call)
+{
+	open_join_dialog();
+}
+
 /* ARGSUSED */
 static void about_cb(Widget w, XtPointer client, XtPointer call)
 {
@@ -1013,10 +1606,13 @@ static void about_cb(Widget w, XtPointer client, XtPointer call)
 	sprintf(text,
 		"scsitbgui - toolbox for emulated SCSI devices\n\n"
 		"Motif front end for BlueSCSI / ZuluSCSI targets that\n"
-		"implement the Toolbox API (SCSI vendor commands 0xD0-0xDA).\n\n"
+		"implement the Toolbox API (SCSI vendor commands 0xD0-0xDA),\n"
+		"and for the Wi-Fi commands (0x1C) on their emulated\n"
+		"DaynaPort network target.\n\n"
 		"A device is only driven as a toolbox target if it both\n"
 		"advertises the API and answers TOOLBOX_LIST_DEVICES (0xD9);\n"
-		"a claim on its own is never trusted.\n\n"
+		"a claim on its own is never trusted. The same rule decides\n"
+		"which node carries the radio.\n\n"
 		"Shares its protocol core with the irixscsitb command-line tool.\n\n"
 		"Revision:   %s\n"
 		"Stamped:    %s\n"
@@ -1264,6 +1860,26 @@ static void build_menu(Widget menubar)
 	item = XtVaCreateManagedWidget("forceToggle", xmToggleButtonWidgetClass, pane, NULL);
 	XtAddCallback(item, XmNvalueChangedCallback, force_cb, NULL);
 
+	/* --- Wi-Fi ---
+	 * A menu of its own rather than three more entries under Device,
+	 * because these do not act on the device selected in the bus list: they
+	 * act on the emulated NETWORK target, which is a different SCSI ID and
+	 * is found automatically. Filing them under Device would say otherwise.
+	 */
+	pane = XmCreatePulldownMenu(menubar, "wifiPane", NULL, 0);
+	XtVaCreateManagedWidget("wifi", xmCascadeButtonWidgetClass, menubar,
+				XmNmnemonic, 'W', XmNsubMenuId, pane, NULL);
+
+	item = XtVaCreateManagedWidget("wifiScan", xmPushButtonWidgetClass, pane, NULL);
+	XtAddCallback(item, XmNactivateCallback, wifi_scan_cb, NULL);
+	item = XtVaCreateManagedWidget("wifiInfo", xmPushButtonWidgetClass, pane, NULL);
+	XtAddCallback(item, XmNactivateCallback, wifi_info_cb, NULL);
+
+	XtVaCreateManagedWidget("sep4", xmSeparatorWidgetClass, pane, NULL);
+
+	item = XtVaCreateManagedWidget("wifiJoinItem", xmPushButtonWidgetClass, pane, NULL);
+	XtAddCallback(item, XmNactivateCallback, wifi_join_cb, NULL);
+
 	/* --- Help --- */
 	pane = XmCreatePulldownMenu(menubar, "helpPane", NULL, 0);
 	item = XtVaCreateManagedWidget("help", xmCascadeButtonWidgetClass, menubar,
@@ -1316,6 +1932,8 @@ static void build_content_pane(Widget parent)
 	XtAddCallback(b, XmNvalueChangedCallback, mode_cb, (XtPointer)CONTENT_SHARED);
 	b = XtVaCreateManagedWidget("modeCds", xmToggleButtonWidgetClass, radio, NULL);
 	XtAddCallback(b, XmNvalueChangedCallback, mode_cb, (XtPointer)CONTENT_CDS);
+	mode_wifi_btn = XtVaCreateManagedWidget("modeWifi", xmToggleButtonWidgetClass, radio, NULL);
+	XtAddCallback(mode_wifi_btn, XmNvalueChangedCallback, mode_cb, (XtPointer)CONTENT_WIFI);
 	XtManageChild(radio);
 
 	/* Button row along the bottom. */
@@ -1345,6 +1963,13 @@ static void build_content_pane(Widget parent)
 					 XmNleftWidget, put_btn,
 					 NULL);
 	XtAddCallback(cd_btn, XmNactivateCallback, switch_cd_cb, NULL);
+
+	join_btn = XtVaCreateManagedWidget("joinWifi", xmPushButtonWidgetClass, form,
+					   XmNbottomAttachment, XmATTACH_FORM,
+					   XmNleftAttachment, XmATTACH_WIDGET,
+					   XmNleftWidget, cd_btn,
+					   NULL);
+	XtAddCallback(join_btn, XmNactivateCallback, wifi_join_cb, NULL);
 
 	n = 0;
 	XtSetArg(args[n], XmNlistSizePolicy, XmCONSTANT); n++;

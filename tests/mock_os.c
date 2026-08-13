@@ -16,10 +16,17 @@
  *   d4  dead node             - never answers
  *   d5  ZuluSCSI              - real toolbox (name at INQUIRY byte 36)
  *   d6  liar                  - serves page 0x31 but does NOT implement 0xD9
+ *   d7  Dayna SCSI/Link       - the emulated network target: implements the
+ *                               Wi-Fi commands (0x1C) but NOT the toolbox
+ *   d8  real Dayna SCSI/Link  - the vintage card: same INQUIRY identity, no
+ *                               radio, so it claims Wi-Fi and fails to answer
  *
  * Expected result of `make test`: d3 and d5 are marked [TOOLBOX]; d1 is NOT
  * (it must never be accepted on product name alone); d6 is reported as
- * "claims toolbox, no 0xD9 answer"; d4 is skipped.
+ * "claims toolbox, no 0xD9 answer"; d4 is skipped; d7 is marked [WIFI] and d8
+ * is not - the Wi-Fi check has to be functional too, exactly like the toolbox
+ * one, because the emulated and the genuine SCSI/Link are indistinguishable
+ * by name.
  *
  * Test scaffolding only - never built into the shipped tool.
  *
@@ -45,7 +52,7 @@
 
 extern int verbose;
 
-#define MOCK_N 7
+#define MOCK_N 9
 static const char *mock_paths[MOCK_N] = {
 	"/dev/mock/sc0d0l0",   /* plain SGI disk    - no toolbox at all      */
 	"/dev/mock/sc0d1l0",   /* IRIS EMUL DISK    - emulated disk, NO tbox */
@@ -53,13 +60,17 @@ static const char *mock_paths[MOCK_N] = {
 	"/dev/mock/sc0d3l0",   /* BlueSCSI          - real toolbox           */
 	"/dev/mock/sc0d4l0",   /* dead node         - never answers          */
 	"/dev/mock/sc0d5l0",   /* ZuluSCSI          - real toolbox           */
-	"/dev/mock/sc0d6l0"    /* liar: page 0x31 but no 0xD9 implementation */
+	"/dev/mock/sc0d6l0",   /* liar: page 0x31 but no 0xD9 implementation */
+	"/dev/mock/sc0d7l0",   /* emulated DaynaPort: Wi-Fi, no toolbox      */
+	"/dev/mock/sc0d8l0"    /* genuine DaynaPort: same name, no radio     */
 };
 
 /* Does the device serve MODE SENSE page 0x31 with the toolbox magic? */
-static int mock_page31[MOCK_N] = { 0, 0, 0, 1, 0, 0, 1 };
+static int mock_page31[MOCK_N] = { 0, 0, 0, 1, 0, 0, 1, 0, 0 };
 /* Does the device actually IMPLEMENT 0xD9 LIST_DEVICES? */
-static int mock_d9[MOCK_N]     = { 0, 0, 0, 1, 0, 1, 0 };
+static int mock_d9[MOCK_N]     = { 0, 0, 0, 1, 0, 1, 0, 0, 0 };
+/* Does the device actually IMPLEMENT the 0x1C Wi-Fi commands? */
+static int mock_wifi[MOCK_N]   = { 0, 0, 0, 0, 0, 0, 0, 1, 0 };
 
 int mediad_start(void) { return 0; }
 int mediad_stop(void)  { return 0; }
@@ -129,6 +140,11 @@ static int mock_command(int dev, unsigned char *cmd, int cmd_len,
 		case 3: fill_inq(buf, buf_len, 0x00, "QUANTUM ", "BlueSCSI        ", "1.0 ", "BlueSCSI Picov2026.04.28"); break;
 		case 5: fill_inq(buf, buf_len, 0x00, "QUANTUM ", "ZuluSCSI        ", "1.0 ", "ZuluSCSI v2024.05.17"); break;
 		case 6: fill_inq(buf, buf_len, 0x00, "ACME    ", "MYSTERY BOX     ", "1.0 ", NULL); break;
+		/* Both SCSI/Link nodes are processor devices (PDT 0x03) with
+		 * byte-identical INQUIRY data - which is the point: only the
+		 * 0x1C answer below tells them apart. */
+		case 7: fill_inq(buf, buf_len, 0x03, "Dayna   ", "SCSI/Link       ", "2.0f", NULL); break;
+		case 8: fill_inq(buf, buf_len, 0x03, "Dayna   ", "SCSI/Link       ", "2.0f", NULL); break;
 		}
 		return 0;
 	}
@@ -150,6 +166,72 @@ static int mock_command(int dev, unsigned char *cmd, int cmd_len,
 		buf[1] = 0x02;  /* CD */
 		buf[2] = 0x02;  /* CD  */
 		return 0;
+	}
+
+	/*
+	 * Toolbox Wi-Fi, 0x1C with the subcommand in cmd[1] and a big-endian
+	 * length in cmd[3..4] - a SIX-byte CDB, which is exactly the detail this
+	 * mock exists to keep honest. Only d7 answers; d8 has the same INQUIRY
+	 * identity and no radio, so it must fall through to the failure return
+	 * at the bottom and be rejected.
+	 */
+	if (cmd[0] == 0x1C) {
+		int want = ((int)cmd[3] << 8) | (int)cmd[4];
+		int i;
+
+		if (!mock_wifi[idx])
+			return 1;
+		if (cmd_len != 6)
+			return 1;              /* the ten-byte CDB mistake */
+		if (buf_len < want)
+			want = buf_len;
+		memset(buf, 0, buf_len);
+
+		switch (cmd[1]) {
+		case 0x01:                     /* SCAN: started */
+		case 0x02:                     /* COMPLETE: instantly, for the test */
+			if (want < 1) return 1;
+			buf[0] = 1;
+			return 0;
+
+		case 0x03: {                   /* SCAN_RESULTS: three networks */
+			static const char *ssids[3] = { "Indigo Magic", "4Dwm", "open-guest" };
+			static const int rssi[3]    = { -42, -71, -88 };
+			static const int chan[3]    = { 6, 11, 1 };
+			static const int auth[3]    = { 1, 1, 0 };
+			int n = 3;
+			int size = n * 74;
+
+			if (want < 2 + size) return 1;
+			buf[0] = (unsigned char)((size >> 8) & 0xFF);
+			buf[1] = (unsigned char)(size & 0xFF);
+			for (i = 0; i < n; i++) {
+				unsigned char *e = buf + 2 + (i * 74);
+				strcpy((char *)e, ssids[i]);
+				e[64] = 0xDE; e[65] = 0xAD; e[66] = 0xBE;
+				e[67] = 0xEF; e[68] = 0x00; e[69] = (unsigned char)i;
+				e[70] = (unsigned char)(rssi[i] & 0xFF);  /* int8 */
+				e[71] = (unsigned char)chan[i];
+				e[72] = (unsigned char)auth[i];
+			}
+			return 0;
+		}
+
+		case 0x04:                     /* INFO: joined to the first one */
+			if (want < 2 + 74) return 1;
+			buf[0] = 0x00;
+			buf[1] = 74;           /* always sizeof(wifi_network_entry) */
+			strcpy((char *)buf + 2, "Indigo Magic");
+			buf[2 + 64] = 0xDE; buf[2 + 65] = 0xAD; buf[2 + 66] = 0xBE;
+			buf[2 + 67] = 0xEF; buf[2 + 68] = 0x00; buf[2 + 69] = 0x00;
+			buf[2 + 70] = (unsigned char)(-42 & 0xFF);
+			buf[2 + 71] = 6;
+			buf[2 + 72] = 0x01;
+			return 0;
+
+		default:
+			return 1;
+		}
 	}
 
 	if (cmd[0] == 0xD6) {                   /* TOGGLE_DEBUG */
@@ -188,9 +270,27 @@ int scsi_send_command_probe(int dev, unsigned char *cmd, int cmd_len, unsigned c
 	return mock_command(dev, cmd, cmd_len, buf, buf_len);
 }
 
+/*
+ * Data-out. The toolbox send-file sequence is accepted unconditionally (there
+ * is no SD card here to write to), but the Wi-Fi JOIN is checked: the firmware
+ * refuses it outright unless the CDB is six bytes and the length field says
+ * exactly sizeof(struct wifi_join_request), so the mock refuses it too rather
+ * than letting a malformed request look like a success.
+ */
 int scsi_send_commandw(int dev, unsigned char *cmd, int cmd_len, unsigned char *buf, int buf_len)
 {
-	(void)dev; (void)cmd; (void)cmd_len; (void)buf; (void)buf_len;
+	int idx = dev - 100;
+
+	(void)buf;
+
+	if (cmd[0] == 0x1C) {
+		if (idx < 0 || idx >= MOCK_N || !mock_wifi[idx])
+			return 1;
+		if (cmd_len != 6)
+			return 1;
+		if ((((int)cmd[3] << 8) | (int)cmd[4]) != 130 || buf_len != 130)
+			return 1;
+	}
 	return 0;
 }
 

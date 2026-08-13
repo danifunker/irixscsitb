@@ -97,6 +97,210 @@ static int cli_printdevices(int dev)
 	return 0;
 }
 
+/* ------------------------------------------------------------------ *
+ * Wi-Fi (-w / -W / -j)
+ * ------------------------------------------------------------------ */
+
+/*
+ * One network, as two lines. Signal is given both ways on purpose: the dBm is
+ * the number you compare between rows, the bar count is the one you can read at
+ * a glance without knowing that -30 beats -80.
+ */
+static void print_wifi_network(const ToolboxWifiNetwork *net, int number)
+{
+	char bssid[18];
+	char bars[6];
+	int n, i;
+
+	wifi_bssid_str(net->bssid, bssid, sizeof(bssid));
+
+	n = wifi_signal_bars(net->rssi);
+	for (i = 0; i < 4; i++)
+		bars[i] = (i < n) ? '#' : '.';
+	bars[4] = '\0';
+
+	if (number > 0)
+		fprintf(stdout, "#%-2i %s\n", number, net->ssid);
+	else
+		fprintf(stdout, "    %s\n", net->ssid);
+
+	fprintf(stdout, "    %s  %i dBm   channel %-3i  %-8s  %s\n",
+		bars, net->rssi, net->channel, wifi_auth_name(net->flags), bssid);
+}
+
+/* -w: scan for networks and list what came back. */
+static int cli_wifi_scan(int dev)
+{
+	ToolboxWifiNetwork nets[WIFI_MAX_NETWORKS];
+	int n, i;
+
+	fprintf(stdout, "Scanning for Wi-Fi networks (this takes a few seconds)...\n");
+	if (toolbox_wifi_scan(dev, WIFI_SCAN_TIMEOUT_SEC) != 0)
+		return -1;
+
+	n = toolbox_wifi_results(dev, nets, WIFI_MAX_NETWORKS);
+	if (n < 0)
+		return -1;
+
+	if (n == 0) {
+		fprintf(stdout, "No Wi-Fi networks found.\n");
+		return 0;
+	}
+
+	fprintf(stdout, "\nFound %i network(s):\n\n", n);
+	for (i = 0; i < n; i++) {
+		print_wifi_network(&nets[i], i + 1);
+		fprintf(stdout, "\n");
+	}
+	fprintf(stdout, "Join one with:  irixscsitb -j '<name>' -k '<password>'\n");
+	return 0;
+}
+
+/* -W: what the radio is joined to right now. */
+static int cli_wifi_info(int dev)
+{
+	ToolboxWifiNetwork net;
+
+	if (toolbox_wifi_info(dev, &net) != 0)
+		return -1;
+
+	if (net.ssid[0] == '\0') {
+		fprintf(stdout, "Not joined to any Wi-Fi network.\n");
+		fprintf(stdout, "Scan with -w, then join with -j '<name>' -k '<password>'.\n");
+		return 0;
+	}
+
+	fprintf(stdout, "Current Wi-Fi network:\n\n");
+	print_wifi_network(&net, 0);
+	return 0;
+}
+
+/* -j: join a network, then report what actually happened. */
+static int cli_wifi_join(int dev, const char *ssid, const char *key, int channel)
+{
+	ToolboxWifiNetwork net;
+
+	if (toolbox_wifi_join(dev, ssid, key, channel) != 0)
+		return -1;
+
+	fprintf(stdout, "Join request for '%s' sent.\n", ssid);
+
+	/*
+	 * The firmware acknowledges the REQUEST, not the association - it hands
+	 * the credentials to the radio and answers GOOD immediately. So the only
+	 * way to tell the operator whether it worked is to associate-and-ask,
+	 * which takes a few seconds on real hardware.
+	 */
+	fprintf(stdout, "Waiting for the radio to associate...\n");
+	sleep(5);
+
+	if (toolbox_wifi_info(dev, &net) != 0)
+		return -1;
+
+	if (net.ssid[0] == '\0') {
+		fprintf(stdout, "Not associated yet. The device reports no network.\n");
+		fprintf(stdout, "Check the password and re-run with -W in a few seconds.\n");
+		return 1;
+	}
+	if (strcmp(net.ssid, ssid) != 0) {
+		fprintf(stdout, "Still joined to '%s'. The new network was not taken.\n", net.ssid);
+		return 1;
+	}
+
+	fprintf(stdout, "\nJoined:\n\n");
+	print_wifi_network(&net, 0);
+	return 0;
+}
+
+/*
+ * Get an open file descriptor for the Wi-Fi target.
+ *
+ * The path argument is optional here, unlike every other operation, and that is
+ * deliberate. Wi-Fi lives on the emulated NETWORK target - a different SCSI ID
+ * from the disk, with its own device node - so the path that works for -s and
+ * -l is the wrong one, and the right one is not something the operator can work
+ * out from anything visible on the host. Given no path we find it; given one we
+ * check it really is the radio and, if it isn't, say which node is.
+ *
+ * Returns the open fd (caller closes it) or -1.
+ */
+static int cli_wifi_open(const char *path, int for_write)
+{
+	char found[SCSI_PATH_MAX];
+	int dev;
+	int auto_found = 0;
+
+	if (path == NULL) {
+		if (toolbox_wifi_find(found, sizeof(found)) != 0) {
+			fprintf(stderr, "Error: no Wi-Fi device found on the SCSI bus.\n");
+			fprintf(stderr, "The Wi-Fi commands are answered by the emulated NETWORK target\n");
+			fprintf(stderr, "(a DaynaPort SCSI/Link), not by the disk or CD. Check that a\n");
+			fprintf(stderr, "network device is enabled in the firmware's config and that the\n");
+			fprintf(stderr, "board has a radio; 'irixscsitb -t <device>' lists the emulated\n");
+			fprintf(stderr, "targets and 'irixscsitb -b' scans the bus.\n");
+			if (!running_as_root())
+				fprintf(stderr, "You are also not root, which on its own would explain this.\n");
+			return -1;
+		}
+		path = found;
+		auto_found = 1;
+	}
+
+	dev = scsi_open((char *)path, for_write ? 0 : 1);
+	if (dev < 0 && for_write)
+		dev = scsi_open((char *)path, 1);
+	if (dev < 0) {
+		fprintf(stderr, "ERROR: Cannot open %s: %s\n", path, strerror(errno));
+		if (!running_as_root())
+			fprintf(stderr, "You are not root - that is almost certainly why. Re-run as root.\n");
+		return -1;
+	}
+
+	if (!toolbox_wifi_probe(dev, NULL, 0)) {
+		fprintf(stderr, "Error: %s is not the Wi-Fi device.\n", path);
+		fprintf(stderr, "It did not answer the Wi-Fi info command (0x1C/0x04).\n");
+		scsi_close(dev);
+
+		/* Point at the right node rather than just refusing. */
+		if (toolbox_wifi_find(found, sizeof(found)) == 0)
+			fprintf(stderr, "The Wi-Fi device on this bus is %s - use that instead,\n"
+					"or leave the device path off entirely and it will be found.\n", found);
+		else
+			fprintf(stderr, "No Wi-Fi device was found on this bus either. Remember the\n"
+					"Wi-Fi commands go to the emulated NETWORK target, not the disk.\n");
+		return -1;
+	}
+
+	/* Only now, once it has actually answered - saying "using X" and then
+	 * failing on X reads like the tool picked the wrong node. */
+	if (auto_found)
+		fprintf(stdout, "Using Wi-Fi device %s\n", path);
+
+	return dev;
+}
+
+/* Dispatch for the three Wi-Fi modes. Returns a process exit status. */
+static int cli_wifi(int mode, const char *path, const char *ssid,
+		    const char *key, int channel)
+{
+	int dev;
+	int ret;
+
+	dev = cli_wifi_open(path, mode == MODE_WIFI_JOIN);
+	if (dev < 0)
+		return 1;
+
+	if (mode == MODE_WIFI_SCAN)
+		ret = cli_wifi_scan(dev);
+	else if (mode == MODE_WIFI_INFO)
+		ret = cli_wifi_info(dev);
+	else
+		ret = cli_wifi_join(dev, ssid, key, channel);
+
+	scsi_close(dev);
+	return ret == 0 ? 0 : 1;
+}
+
 /*
  * Explain a failed qualification. Kept next to the CLI rather than in the core
  * so the GUI can put the same distinctions in a dialog instead of on stderr.
@@ -173,6 +377,27 @@ static int cli_inquiry(int dev, int print)
 }
 
 /*
+ * The markers on one scan row. out must hold SCAN_TAG_MAX bytes; the longest
+ * combination is well under that.
+ *
+ * Written as an accumulation rather than a chain of ternaries because the two
+ * questions are independent: "does it implement the toolbox" and "does it have
+ * a radio" are answered by different commands, and today's firmware answering
+ * them on different targets is a fact about the firmware, not a rule we should
+ * bake into what we can display.
+ */
+static void scan_tags(const ToolboxScanEntry *e, char *out)
+{
+	out[0] = '\0';
+	if (e->confirmed)
+		strcpy(out, "  [TOOLBOX]");
+	else if (e->claims)
+		strcpy(out, "  [claims toolbox, no 0xD9 answer]");
+	if (e->wifi)
+		strcat(out, "  [WIFI]");
+}
+
+/*
  * -b: scan every generic SCSI device node this host exposes and print whatever
  * answers, flagging the toolbox-capable ones. Unlike every other operation this
  * needs NO device path: it is how you FIND the path to pass to the others.
@@ -183,10 +408,12 @@ static int cli_scanbus(void)
 {
 	char paths[MAX_SCAN_DEVICES][SCSI_PATH_MAX];
 	ToolboxScanEntry e;
+	char tags[SCAN_TAG_MAX];
 	int count, i;
 	int answered = 0;
 	int found = 0;
 	int unconfirmed = 0;
+	int wifi = 0;
 
 	count = scsi_enum_devices(paths, MAX_SCAN_DEVICES);
 	if (count < 0)
@@ -218,15 +445,18 @@ static int cli_scanbus(void)
 			found++;
 		else if (e.claims)
 			unconfirmed++;
+		if (e.wifi)
+			wifi++;
 
-		fprintf (stdout, "%-22s %-8s %s%s\n", e.path, e.type_name, e.identity,
-			e.confirmed ? "  [TOOLBOX]" :
-				(e.claims ? "  [claims toolbox, no 0xD9 answer]" : ""));
+		scan_tags(&e, tags);
+		fprintf (stdout, "%-22s %-8s %s%s\n", e.path, e.type_name, e.identity, tags);
 	}
 
 	fprintf (stdout, "\n%i device(s) answered, %i toolbox-capable", answered, found);
 	if (unconfirmed > 0)
 		fprintf (stdout, " (%i claimed toolbox but failed 0xD9)", unconfirmed);
+	if (wifi > 0)
+		fprintf (stdout, ", %i with Wi-Fi", wifi);
 	fprintf (stdout, ".\n");
 
 	if (found > 0)
@@ -234,6 +464,9 @@ static int cli_scanbus(void)
 	else if (answered > 0 && !force_toolbox)
 		fprintf (stdout, "No toolbox target found. Check toolbox mode is enabled on the device,\n"
 				 "or re-scan with -F to test every device by issuing 0xD9 directly.\n");
+	if (wifi > 0)
+		fprintf (stdout, "The [WIFI] path answers -w / -W / -j; those options find it themselves,\n"
+				 "so you can leave the device path off for Wi-Fi.\n");
 	return found;
 }
 
@@ -398,6 +631,15 @@ static void usage(void)
 	fprintf(stderr, "\t-F      : skip the identity check; test the device with a real toolbox command\n");
 	fprintf(stderr, "\t-f      : force a CD switch even if the volume is still mounted (risky)\n");
 	fprintf(stderr, "\t-V      : show build revision/date and exit (also -version)\n");
+	fprintf(stderr, "\nWi-Fi (needs NO device path - the network target is found automatically):\n");
+	fprintf(stderr, "\t-w      : scan for Wi-Fi networks and list them\n");
+	fprintf(stderr, "\t-W      : show the Wi-Fi network currently joined\n");
+	fprintf(stderr, "\t-j ssid : join the named Wi-Fi network\n");
+	fprintf(stderr, "\t-k key  : password for -j (omit for an open network)\n");
+	fprintf(stderr, "\t-n num  : channel for -j (default 0 = let the device choose)\n");
+	fprintf(stderr, "\nNOTE: Wi-Fi is answered by the emulated NETWORK target (DaynaPort SCSI/Link),\n");
+	fprintf(stderr, "which is a DIFFERENT SCSI ID from the disk. If you do pass a device path to\n");
+	fprintf(stderr, "the Wi-Fi options it must be that one; 'irixscsitb -b' marks it [WIFI].\n");
 	/* Only nag about root when we actually aren't root. */
 	if (!running_as_root())
 		fprintf(stderr, "\nNOTE: you are not running as root - opening the SCSI device will most\n"
@@ -409,10 +651,18 @@ int main(int argc, char *argv[])
 	int c, cdimg = NOT_ACTIVE, list = 0, file = NOT_ACTIVE;
 	int force = 0;
 	char outdir[1024];
+	/* One byte longer than the protocol allows, so an over-long value still
+	 * arrives at toolbox_wifi_join() intact enough to be REJECTED with a
+	 * message rather than silently truncated into a different network name. */
+	char wifi_ssid[WIFI_SSID_MAX + 2];
+	char wifi_key[WIFI_KEY_MAX + 2];
+	int wifi_channel = 0;
 
 	/* Must start empty: without -o or -p nothing else writes to it, and
 	 * toolbox_getfile() reads it to decide whether to default to "./". */
 	outdir[0] = '\0';
+	wifi_ssid[0] = '\0';
+	wifi_key[0] = '\0';
 
 	/*
 	 * getopt() only understands single-character flags, so a literal
@@ -427,9 +677,27 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	while ((c = getopt(argc, argv, "hvVlsitbDFfc:d:g:o:p:")) != -1) switch (c) {
+	while ((c = getopt(argc, argv, "hvVlsitbwWDFfc:d:g:o:p:j:k:n:")) != -1) switch (c) {
 		case 'c':
 			cdimg = atoi(optarg);
+			break;
+		case 'w':
+			list = MODE_WIFI_SCAN;
+			break;
+		case 'W':
+			list = MODE_WIFI_INFO;
+			break;
+		case 'j':
+			strncpy(wifi_ssid, optarg, sizeof(wifi_ssid) - 1);
+			wifi_ssid[sizeof(wifi_ssid) - 1] = '\0';
+			list = MODE_WIFI_JOIN;
+			break;
+		case 'k':
+			strncpy(wifi_key, optarg, sizeof(wifi_key) - 1);
+			wifi_key[sizeof(wifi_key) - 1] = '\0';
+			break;
+		case 'n':
+			wifi_channel = atoi(optarg);
 			break;
 		case 'g':
 			file = atoi(optarg);
@@ -490,6 +758,26 @@ int main(int argc, char *argv[])
 	 * device path. Handle it before the path check below. */
 	if (list == MODE_SCAN)
 		return cli_scanbus() < 0 ? 1 : 0;
+
+	/*
+	 * The Wi-Fi modes take no device path either, for a different reason:
+	 * they talk to the emulated NETWORK target rather than the disk, and
+	 * that node is found for us. A path is still accepted (and checked) if
+	 * one is given.
+	 *
+	 * They also bypass do_drive() entirely, because the toolbox gate it
+	 * applies would reject the network target correctly - the firmware does
+	 * not implement 0xD0-0xDA there at all.
+	 */
+	if (list == MODE_WIFI_SCAN || list == MODE_WIFI_INFO || list == MODE_WIFI_JOIN) {
+		if (argc > 1)
+			fprintf(stderr, "WARNING: extra arguments after '%s' ignored - put options BEFORE the device path.\n", argv[0]);
+		return cli_wifi(list, argc >= 1 ? argv[0] : NULL,
+				wifi_ssid, wifi_key, wifi_channel);
+	}
+
+	if (wifi_key[0] != '\0' || wifi_channel != 0)
+		fprintf(stderr, "WARNING: -k/-n only mean anything with -j; ignoring them.\n");
 
 	/*Stop any removable media managers running on the host system before changing CDs */
 	if (cdimg != -1)

@@ -3,7 +3,8 @@
 `irixscsitb` is the host-side companion for **BlueSCSI** and **ZuluSCSI** emulated SCSI
 devices. It speaks the Toolbox API (SCSI vendor commands `0xD0`–`0xDA`) to list
 and transfer files in the device's shared directory, list and swap CD images,
-enumerate the emulated targets, and toggle firmware debug logging.
+enumerate the emulated targets, and toggle firmware debug logging — and the
+Toolbox Wi-Fi commands (`0x1C`) to scan for wireless networks and join one.
 
 It is the IRIX/Linux counterpart to
 [escsitoolbox](https://github.com/nielsmh/escsitoolbox) (the DOS/Windows tool for
@@ -43,6 +44,9 @@ It does everything the CLI does:
 | Device ▸ **Emulated Targets…** | `-t` |
 | Device ▸ **Show / Turn Debug On / Off** | `-D` / `-d` |
 | Device ▸ **Force detection** | `-F` |
+| Lower pane — **Wi-Fi networks** + Wi-Fi ▸ **Scan For Networks** | `-w` |
+| Wi-Fi ▸ **Current Network…** | `-W` |
+| Wi-Fi ▸ **Join Network…** / **Join…** button | `-j` / `-k` |
 
 Switching a CD unmounts the old volume first — swapping the image under a live
 mount leaves the host with cached metadata for a disc that is gone, so the new
@@ -61,6 +65,61 @@ Built against the **Motif 1.2** API, which IRIX 5.3 ships and 6.5 still carries,
 so the o32 GUI binary runs across the whole 5.3 – 6.5 range just like the CLI.
 It picks up the SGI scheme (IndigoMagic and friends) when the host has schemes
 installed, and falls back to plain Motif when it doesn't.
+
+## Wi-Fi
+
+BlueSCSI and ZuluSCSI boards with a radio expose it through the Toolbox Wi-Fi
+commands (`0x1C`). `irixscsitb` can scan for networks, show which one the board
+is on, and join one:
+
+```
+# irixscsitb -w
+Using Wi-Fi device /dev/scsi/sc0d4l0
+Scanning for Wi-Fi networks (this takes a few seconds)...
+
+Found 3 network(s):
+
+#1  Indigo Magic
+    ####  -42 dBm   channel 6    secured   de:ad:be:ef:00:00
+
+#2  4Dwm
+    ##..  -71 dBm   channel 11   secured   de:ad:be:ef:00:01
+
+#3  open-guest
+    ....  -88 dBm   channel 1    open      de:ad:be:ef:00:02
+
+Join one with:  irixscsitb -j '<name>' -k '<password>'
+
+# irixscsitb -j 'Indigo Magic' -k 'hunter2'
+# irixscsitb -W
+```
+
+**The Wi-Fi commands go to a different device from everything else.** The
+firmware answers them on its emulated **network** target — a DaynaPort
+SCSI/Link — which is a separate SCSI ID with its own device node, and which does
+not implement the toolbox commands at all. The disk you pass to `-s` and `-l` is
+the wrong device here and will simply not answer.
+
+Rather than make you work out which node that is, **the Wi-Fi options take no
+device path**: they find it themselves. `-b` marks it `[WIFI]` if you want to
+see it. Passing a path explicitly still works, and if it is the wrong one you
+are told which node to use instead.
+
+Finding it is functional, not name-based, for the same reason toolbox detection
+is: a *genuine* vintage Dayna SCSI/Link presents the identical INQUIRY identity
+and has no radio at all. A node only counts as the Wi-Fi device once it answers
+`0x1C`/`0x04` with a well-formed reply.
+
+Two limits are structural to the protocol: network names and passwords are
+capped at 63 characters, and a scan returns at most 10 networks. A join reports
+only that the *request* was accepted — the firmware hands the credentials to the
+radio and answers immediately — so both front ends wait a few seconds and then
+ask the device what it is actually joined to.
+
+In the GUI this is the **Wi-Fi** menu and a third choice in the lower pane. A
+scan blocks for several seconds of real radio time, so switching the pane to
+Wi-Fi does *not* scan by itself; press **Refresh** (or Wi-Fi ▸ Scan For
+Networks) when you want one.
 
 ## Firmware detection — no hardcoded product names
 
@@ -191,13 +250,21 @@ DEVICE                 TYPE     IDENTITY
 /dev/scsi/sc0d1l0      Disk     SGI IRIS EMUL DISK 1.0
 /dev/scsi/sc0d2l0      CD-ROM   SONY CD-ROM CDU-76S 1.0
 /dev/scsi/sc0d3l0      Disk     QUANTUM ZuluSCSI 1.0 ZuluSCSI v2024.05.17  [TOOLBOX]
+/dev/scsi/sc0d4l0      Proc     Dayna SCSI/Link 2.0f  [WIFI]
 
-4 device(s) answered, 1 toolbox-capable.
+5 device(s) answered, 1 toolbox-capable, 1 with Wi-Fi.
 Pass one of the [TOOLBOX] paths to the other options, e.g. -i <device>
+The [WIFI] path answers -w / -W / -j; those options find it themselves,
+so you can leave the device path off for Wi-Fi.
 ```
 
 A device that advertises the toolbox but fails the `0xD9` confirmation is shown
 as `[claims toolbox, no 0xD9 answer]` rather than being silently trusted.
+
+Note the two markers land on **different rows**, and always will: the firmware
+answers the toolbox commands on the disk it is emulating and the Wi-Fi commands
+on its emulated DaynaPort network target — a separate SCSI ID with its own
+device node. See **Wi-Fi** below.
 
 Every other option needs a device path, and because IRIX `getopt` does not
 reorder arguments the **options must come before the path**
@@ -223,7 +290,15 @@ Options:
         -d num  : set debug mode (0 = off, 1 = on)
         -D      : show current debug mode
         -F      : skip the identity check; test the device with a real toolbox command
+        -f      : force a CD switch even if the volume is still mounted (risky)
         -V      : show build revision/date and exit (also -version)
+
+Wi-Fi (needs NO device path - the network target is found automatically):
+        -w      : scan for Wi-Fi networks and list them
+        -W      : show the Wi-Fi network currently joined
+        -j ssid : join the named Wi-Fi network
+        -k key  : password for -j (omit for an open network)
+        -n num  : channel for -j (default 0 = let the device choose)
 ```
 
 `irixscsitb -version` (or `-V`, or Help > About in the GUI) reports the git

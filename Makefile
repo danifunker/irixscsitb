@@ -60,8 +60,8 @@ detect:
 		echo "*** Compiling for Linux"; \
 		$(MAKE) irixscsitb \
 			BUILD_OS=LINUX \
-			SRCS="irixscsitb.c toolbox.c version.c linux.c" \
-			OBJS="irixscsitb.o toolbox.o version.o linux.o" \
+			SRCS="irixscsitb.c toolbox.c wifi.c version.c linux.c" \
+			OBJS="irixscsitb.o toolbox.o wifi.o version.o linux.o" \
 			CFLAGS="-O2 -DOS_LINUX" \
 			LDFLAGS=""; \
 	elif [ "$$OS" = "IRIX64" ]; then \
@@ -89,12 +89,12 @@ detect:
 # is faster but 6.x-only. uname reports "IRIX" on 5.3 and "IRIX64" on 6.x.
 irix-o32:
 	$(MAKE) irixscsitb \
-		SRCS="irixscsitb.c toolbox.c version.c irix.c" OBJS="irixscsitb.o toolbox.o version.o irix.o" \
+		SRCS="irixscsitb.c toolbox.c wifi.c version.c irix.c" OBJS="irixscsitb.o toolbox.o wifi.o version.o irix.o" \
 		CFLAGS="-32 -mips2 -O2 -DOS_IRIX -DBUILD_O32" LDFLAGS=""
 
 irix-n32:
 	$(MAKE) irixscsitb \
-		SRCS="irixscsitb.c toolbox.c version.c irix.c" OBJS="irixscsitb.o toolbox.o version.o irix.o" \
+		SRCS="irixscsitb.c toolbox.c wifi.c version.c irix.c" OBJS="irixscsitb.o toolbox.o wifi.o version.o irix.o" \
 		CFLAGS="-mips3 -n32 -O2 -DOS_IRIX -DBUILD_N32" LDFLAGS=""
 
 # IRIS IM (Motif) GUI. A SECOND binary, not a replacement: the CLI stays free of
@@ -114,12 +114,12 @@ GUILIBS = -lXm -lXt -lXext -lX11 -lm
 
 irix-gui-o32:
 	$(MAKE) scsitbgui \
-		OBJS="gui_motif.o toolbox.o version.o irix.o" \
+		OBJS="gui_motif.o toolbox.o wifi.o version.o irix.o" \
 		CFLAGS="-32 -mips2 -O2 -DOS_IRIX -DBUILD_O32" LDFLAGS="$(GUILIBS)"
 
 irix-gui-n32:
 	$(MAKE) scsitbgui \
-		OBJS="gui_motif.o toolbox.o version.o irix.o" \
+		OBJS="gui_motif.o toolbox.o wifi.o version.o irix.o" \
 		CFLAGS="-mips3 -n32 -O2 -DOS_IRIX -DBUILD_N32" LDFLAGS="$(GUILIBS)"
 
 # Build (auto-detecting the OS) then package the binaries + README into
@@ -146,9 +146,15 @@ tar: default
 # (getopt/optarg/optind), which only shows up on Linux CI - macOS exposes them
 # regardless. Affects this host-side build only; MIPSpro cc ignores the issue.
 test: version.h buildhost.h
-	$(CC) -std=c89 -Wall -D_POSIX_C_SOURCE=200112L -DOS_IRIX -I. -o tests/irixscsitb-mock irixscsitb.c toolbox.c version.c tests/mock_os.c
+	$(CC) -std=c89 -Wall -D_POSIX_C_SOURCE=200112L -DOS_IRIX -I. -o tests/irixscsitb-mock irixscsitb.c toolbox.c wifi.c version.c tests/mock_os.c
 	@echo "*** mock bus scan:"
 	@./tests/irixscsitb-mock -b
+	@echo ""
+	@echo "*** mock Wi-Fi status (-W), device found automatically:"
+	@./tests/irixscsitb-mock -W
+	@echo ""
+	@echo "*** mock Wi-Fi scan (-w):"
+	@./tests/irixscsitb-mock -w
 
 # Syntax-check the IRIX-only sources against a REAL IRIX header tree, without
 # needing an IRIX machine. gui_motif.c and irix.c cannot be COMPILED on the dev
@@ -196,6 +202,9 @@ irixscsitb.o: irixscsitb.c irixscsitb.h os.h
 
 toolbox.o: toolbox.c irixscsitb.h os.h
 	$(CC) $(CFLAGS) -c toolbox.c
+
+wifi.o: wifi.c irixscsitb.h os.h
+	$(CC) $(CFLAGS) -c wifi.c
 
 version.o: version.c irixscsitb.h version.h buildhost.h
 	$(CC) $(CFLAGS) -c version.c

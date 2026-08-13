@@ -184,6 +184,115 @@ The host stores these in `device_list[]` and uses them to gate CD operations
 after acceptance and a failure is non-fatal, so it is no longer required for
 detection, but you should still implement it for CD support.
 
+## 2.5 Wi-Fi commands (`0x1C`) — a different CDB on a different target
+
+Two things make this family unlike everything above, and getting either wrong is
+the usual reason a first implementation sees nothing at all:
+
+1. **The CDB is 6 bytes, not 10.** Every `0xD0`–`0xDA` command is a 10-byte CDB.
+   These are not. Send a 10-byte CDB and the device does not answer.
+2. **They are answered by the emulated NETWORK target**, not by the disk or CD.
+   That is a different SCSI ID with its own device node. Worse, the firmware
+   *deliberately* omits the toolbox INQUIRY tail for network targets
+   (`inquiry.c`: the `INQUIRY_NAME` append is skipped for `S2S_CFG_NETWORK`), so
+   the Wi-Fi node will never be detected as a toolbox device and the toolbox
+   node will never answer `0x1C`. They are two separate devices that happen to
+   live on the same board.
+
+> **The upstream documentation is wrong about the subcommand byte.** It says the
+> subcommand is in `CDB[2]`, and so does the comment directly above the dispatch
+> in the firmware's own `network.c`. The **code** switches on `scsiDev.cdb[1]`
+> and computes `size = (scsiDev.cdb[3] << 8) + scsiDev.cdb[4]`. Both working
+> host implementations — joshua stein's Macintosh `wifi_da` and SonnyJim's
+> `bswifi` — follow the code. So does this one.
+
+### CDB layout (6 bytes)
+
+```
+byte 0    0x1C        SCSI_NETWORK_WIFI_CMD
+byte 1    subcommand  0x01 SCAN, 0x02 COMPLETE, 0x03 SCAN_RESULTS,
+                      0x04 INFO, 0x05 JOIN
+byte 2    unused
+byte 3..4 transfer length, big endian
+byte 5    control
+```
+
+Note `0x1C` is **RECEIVE DIAGNOSTIC RESULTS** in standard SCSI — a read-only
+command — so probing a non-Wi-Fi target with it is safe, but a plain disk may
+well *answer* rather than reject it. Detection therefore has to check the shape
+of the reply, not merely that one arrived (see below).
+
+| Sub | Name | Length host sets | Data |
+|-----|------|------------------|------|
+| `0x01` | SCAN | 1 | 1 byte in: `1` = scan started, anything else = refused |
+| `0x02` | COMPLETE | 1 | 1 byte in: `1` = finished, `0` = still scanning |
+| `0x03` | SCAN_RESULTS | 2048 | 2-byte BE size, then that many bytes of entries (data-in) |
+| `0x04` | INFO | 76 | 2-byte BE size (always 74), then one entry (data-in) |
+| `0x05` | JOIN | 130 | host sends a 130-byte `wifi_join_request` (data-out) |
+
+The 2-byte size prefix **excludes itself**. `SCAN_RESULTS` truncates to a whole
+number of entries, so `size / 74` is always exact.
+
+**`SCAN_RESULTS` before the scan finishes is an error, not an empty list.** The
+firmware answers CHECK CONDITION (ILLEGAL_REQUEST / INVALID_FIELD_IN_CDB) if
+asked early, so the host must poll `COMPLETE` first. A size of `0` from a
+*finished* scan legitimately means "no networks found".
+
+**`JOIN` validates the length field exactly.** `scsiNetworkWifiJoin()` compares
+it against `sizeof(struct wifi_join_request)` and answers CHECK CONDITION on any
+other value rather than coping — so `CDB[3..4]` must say exactly 130.
+
+`JOIN` also reports only that the *request* was accepted; the firmware hands the
+credentials to the radio and answers GOOD immediately. Whether the association
+succeeded can only be learned by waiting and then issuing `INFO`.
+
+### 2.5.1 `wifi_network_entry` (74 bytes, used by SCAN_RESULTS and INFO)
+
+```
+byte 0..63   ssid      (64 bytes, NUL-padded; may fill all 64 with no terminator)
+byte 64..69  bssid     (6 raw bytes)
+byte 70      rssi      (SIGNED 8-bit, dBm — sign-extend it)
+byte 71      channel   (unsigned)
+byte 72      flags     (bit 0 = WIFI_NETWORK_FLAG_AUTH, i.e. secured)
+byte 73      padding
+```
+
+The firmware declares this `__attribute__((packed))`, which MIPSpro has no
+equivalent of — so `wifi.c` decodes it byte by byte rather than through a C
+struct that would be free to gain padding. `rssi` is the field that bites: read
+as a plain `char` on a platform where that is unsigned, a normal −67 dBm arrives
+as 189.
+
+The firmware keeps ten slots (`WIFI_NETWORK_LIST_ENTRY_COUNT`), so a scan
+returns at most 10 entries (740 bytes + the 2-byte prefix).
+
+### 2.5.2 `wifi_join_request` (130 bytes, data-out for JOIN)
+
+```
+byte 0..63    ssid     (64 bytes including the terminator → 63 usable)
+byte 64..127  key      (64 bytes including the terminator → 63 usable)
+byte 128      channel  (0 = let the firmware choose)
+byte 129      padding
+```
+
+### 2.5.3 How the host finds the Wi-Fi target
+
+Same two-stage shape as toolbox detection, for the same reason — a claim alone
+is never trusted:
+
+1. **Claim** — the INQUIRY identity contains `SCSI/Link`. BlueSCSI's network
+   personalities are `Dayna SCSI/Link 2.0f` and `AmigaNET SCSI/Link 1.0f`
+   (`BlueSCSI_config.h`), so the shared product string covers both; both are
+   INQUIRY peripheral device type `0x03` (processor).
+2. **Confirm** — issue `INFO` (`0x1C`/`0x04`) and require the 2-byte prefix to
+   read exactly **74**. The firmware always reports `sizeof(wifi_network_entry)`
+   there regardless of whether the radio has joined anything, so it is a
+   reliable signature — and one a genuine vintage Dayna SCSI/Link (which has the
+   same INQUIRY identity and no radio at all) cannot produce.
+
+`-F` skips stage 1 and tests every node directly, exactly as it does for the
+toolbox. `irixscsitb -b` reports a confirmed Wi-Fi node as `[WIFI]`.
+
 ## 3. Minimum the emulator must implement to be useful
 
 - **Acceptance:** present vendor `SGI` / product `IRIS EMUL DISK` in INQUIRY

@@ -84,9 +84,10 @@ echo "log     : $LOG"                 | tee -a "$LOG"
 echo "----------------------------------------" | tee -a "$LOG"
 
 echo ">>> copying sources to $BUILDDIR" | tee -a "$LOG"
-cp "$SRCDIR/irixscsitb.c" "$SRCDIR/toolbox.c" "$SRCDIR/gui_motif.c" \
-   "$SRCDIR/version.c" "$SRCDIR/irix.c" "$SRCDIR/irixscsitb.h" \
-   "$SRCDIR/os.h" "$SRCDIR/Makefile" "$BUILDDIR"/ 2>&1 | tee -a "$LOG"
+cp "$SRCDIR/irixscsitb.c" "$SRCDIR/toolbox.c" "$SRCDIR/wifi.c" \
+   "$SRCDIR/gui_motif.c" "$SRCDIR/version.c" "$SRCDIR/irix.c" \
+   "$SRCDIR/irixscsitb.h" "$SRCDIR/os.h" "$SRCDIR/Makefile" \
+   "$BUILDDIR"/ 2>&1 | tee -a "$LOG"
 # README is optional; if present it gets bundled into the .tar.gz by 'make tar'.
 [ -f "$SRCDIR/README.md" ] && cp "$SRCDIR/README.md" "$BUILDDIR"/ 2>/dev/null
 
