@@ -155,6 +155,12 @@ test: version.h buildhost.h
 	@echo ""
 	@echo "*** mock Wi-Fi scan (-w):"
 	@./tests/irixscsitb-mock -w
+	@echo ""
+	@echo "*** mock -F Wi-Fi status against a DISK target (must refuse - no 0x1C emitted):"
+	@./tests/irixscsitb-mock -F -W /dev/mock/sc0d0l0; test $$? -ne 0
+	@echo ""
+	@echo "*** mock -F Wi-Fi status against the radio itself (floor must not block it):"
+	@./tests/irixscsitb-mock -F -W /dev/mock/sc0d7l0
 
 # Syntax-check the IRIX-only sources against a REAL IRIX header tree, without
 # needing an IRIX machine. gui_motif.c and irix.c cannot be COMPILED on the dev

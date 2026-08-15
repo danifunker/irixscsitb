@@ -72,6 +72,9 @@ dkms.conf
 # Host-side mock test binary
 tests/irixscsitb-mock
 
+# macOS Finder droppings
+.DS_Store
+
 # Build identification headers - generated, never committed.
 # version.h is stamped on the host by scripts/mkversion.sh and SHIPPED to the
 # build machine as a static input; buildhost.h is written fresh by every build.

@@ -72,6 +72,15 @@
  * even though the comment directly above that switch says cdb[2]. Both working
  * host implementations (jcs's Macintosh wifi_da and SonnyJim's bswifi) agree
  * with the code rather than the comment.
+ *
+ * And one thing about the opcode itself: 0x1C is NOT a free vendor code the
+ * way 0xD0-0xDA are. In standard SCSI it is RECEIVE DIAGNOSTIC RESULTS, an
+ * opcode a real disk or tape is entitled to implement; the firmware overloads
+ * it on the network target only. It is read-only, so a stray probe cannot
+ * corrupt anything, but it must still never be aimed at a device that is
+ * plainly not a network target: toolbox_wifi_probe()'s INQUIRY-identity check
+ * and peripheral-device-type floor are that SAFETY boundary, not a speed
+ * optimisation - do not remove or weaken them. The floor holds even under -F.
  */
 #define SCSI_NETWORK_WIFI_CMD  0x1C
 #define WIFI_CMD_SCAN          0x01  /* start a scan            -> 1 byte in  */
@@ -387,12 +396,23 @@ int toolbox_probe(const char *path, ToolboxScanEntry *out);
  * WIFI_CMD_INFO with a well-formed 76-byte reply. -F (force_toolbox) skips the
  * claim and tests every node directly, for firmware we don't know by name.
  *
+ * SAFETY: 0x1C is standard RECEIVE DIAGNOSTIC RESULTS (see the note at
+ * SCSI_NETWORK_WIFI_CMD), so nothing reaches the confirm step without passing
+ * the INQUIRY gates here. Besides the identity claim there is a peripheral-
+ * device-type floor that refuses clearly-non-network types (disk, tape,
+ * CD-ROM, ...) - and that floor, unlike the identity check, is NOT waived by
+ * -F: forcing exists for an unrecognised BlueSCSI, not for aiming a
+ * diagnostic command at a disk. A forced probe of a device that passes the
+ * floor but is not positively identified warns on stderr before it sends.
+ *
  * identity is the trimmed INQUIRY string if the caller already has one (a bus
- * scan does), or NULL to have this fetch it - passing what you have saves the
- * node a second INQUIRY. With probe non-zero the commands are sent quietly and
- * without retries, which is what a bus scan wants. Returns 1 for yes, 0 for no.
+ * scan does), or NULL to have this fetch it; pdt is the INQUIRY peripheral-
+ * device-type byte (raw byte 0 is fine, it is masked), or -1 to have this
+ * fetch it - passing what you have saves the node a second INQUIRY. With probe
+ * non-zero the commands are sent quietly and without retries, which is what a
+ * bus scan wants. Returns 1 for yes, 0 for no.
  */
-int toolbox_wifi_probe(int dev, const char *identity, int probe);
+int toolbox_wifi_probe(int dev, const char *identity, int pdt, int probe);
 
 /*
  * Walk the host's generic SCSI nodes and return the first one that answers as

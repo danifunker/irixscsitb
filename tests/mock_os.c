@@ -28,6 +28,12 @@
  * one, because the emulated and the genuine SCSI/Link are indistinguishable
  * by name.
  *
+ * The mock also enforces the host's 0x1C safety contract: 0x1C is standard
+ * RECEIVE DIAGNOSTIC RESULTS, and the host must never emit it to a
+ * storage-type target, -F included. Any 0x1C arriving at a node whose INQUIRY
+ * peripheral device type is not 0x03 aborts the test (see
+ * mock_wifi_floor_check).
+ *
  * Test scaffolding only - never built into the shipped tool.
  *
  * Copyright (C) 2026 Dani Sarfati
@@ -47,6 +53,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "os.h"
 
@@ -71,6 +78,29 @@ static int mock_page31[MOCK_N] = { 0, 0, 0, 1, 0, 0, 1, 0, 0 };
 static int mock_d9[MOCK_N]     = { 0, 0, 0, 1, 0, 1, 0, 0, 0 };
 /* Does the device actually IMPLEMENT the 0x1C Wi-Fi commands? */
 static int mock_wifi[MOCK_N]   = { 0, 0, 0, 0, 0, 0, 0, 1, 0 };
+
+/*
+ * INQUIRY peripheral device type per node, mirroring fill_inq() below. The
+ * 0x1C branches assert against it: 0x1C is standard RECEIVE DIAGNOSTIC
+ * RESULTS, and the host's safety contract (toolbox_wifi_probe's device-type
+ * floor, which holds even under -F) is that it never reaches a storage-type
+ * target. A mock disk or CD seeing 0x1C is therefore a regression in the
+ * host, not a rejection by the device, and the mock dies loudly so `make
+ * test` fails.
+ */
+static const unsigned char mock_pdt[MOCK_N] = {
+	0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03
+};
+
+static void mock_wifi_floor_check(int idx)
+{
+	if (mock_pdt[idx] != 0x03) {
+		fprintf(stderr, "MOCK: FATAL: 0x1C sent to %s (PDT 0x%02x) - "
+				"the Wi-Fi device-type floor is gone\n",
+			mock_paths[idx], mock_pdt[idx]);
+		exit(1);
+	}
+}
 
 int mediad_start(void) { return 0; }
 int mediad_stop(void)  { return 0; }
@@ -179,6 +209,7 @@ static int mock_command(int dev, unsigned char *cmd, int cmd_len,
 		int want = ((int)cmd[3] << 8) | (int)cmd[4];
 		int i;
 
+		mock_wifi_floor_check(idx);
 		if (!mock_wifi[idx])
 			return 1;
 		if (cmd_len != 6)
@@ -284,7 +315,10 @@ int scsi_send_commandw(int dev, unsigned char *cmd, int cmd_len, unsigned char *
 	(void)buf;
 
 	if (cmd[0] == 0x1C) {
-		if (idx < 0 || idx >= MOCK_N || !mock_wifi[idx])
+		if (idx < 0 || idx >= MOCK_N)
+			return 1;
+		mock_wifi_floor_check(idx);
+		if (!mock_wifi[idx])
 			return 1;
 		if (cmd_len != 6)
 			return 1;

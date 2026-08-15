@@ -976,11 +976,13 @@ int toolbox_probe(const char *path, ToolboxScanEntry *out)
 	 * Reporting both in one scan is what saves the operator from having to
 	 * guess which of the emulated IDs carries the radio.
 	 *
-	 * The identity we just built is handed over so this costs no second
-	 * INQUIRY, and it is a probe, so a node that ignores 0x1C costs one
-	 * failed command rather than ten retries.
+	 * The identity and device type we just read are handed over so this
+	 * costs no second INQUIRY, and it is a probe, so a node that ignores
+	 * 0x1C costs one failed command rather than ten retries. The probe
+	 * itself gates the 0x1C on that identity and type - a standard-opcode
+	 * safety boundary, see toolbox_wifi_probe().
 	 */
-	out->wifi = toolbox_wifi_probe(dev, out->identity, 1);
+	out->wifi = toolbox_wifi_probe(dev, out->identity, inq.dev_type, 1);
 
 	scsi_close(dev);
 	return 0;

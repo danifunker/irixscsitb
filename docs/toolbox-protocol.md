@@ -291,7 +291,14 @@ is never trusted:
    same INQUIRY identity and no radio at all) cannot produce.
 
 `-F` skips stage 1 and tests every node directly, exactly as it does for the
-toolbox. `irixscsitb -b` reports a confirmed Wi-Fi node as `[WIFI]`.
+toolbox — with one floor it does **not** skip: because `0x1C` is standard
+RECEIVE DIAGNOSTIC RESULTS (see above), the host refuses to emit it to a
+target whose INQUIRY peripheral device type is plainly not a network device
+(disk, tape, CD-ROM, …). Processor (`0x03`, what the DaynaPort presents),
+communications (`0x09`) and unknown/vendor types pass, so `-F` still serves
+its "unrecognised firmware" purpose; a forced `0x1C` to a device that passes
+the floor but is not positively identified is announced with a warning.
+`irixscsitb -b` reports a confirmed Wi-Fi node as `[WIFI]`.
 
 ## 3. Minimum the emulator must implement to be useful
 

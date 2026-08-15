@@ -68,6 +68,13 @@ static const char *wifi_firmware_ids[] = { "SCSI/Link" };
  *   CDB[3..4] transfer length, big endian
  *   CDB[5]    control
  *
+ * 0x1C is not a free vendor opcode: in standard SCSI it is RECEIVE DIAGNOSTIC
+ * RESULTS, which any device on the bus may legitimately implement. The
+ * firmware overloads it on its network target only, so from the point of view
+ * of every OTHER device a CDB built here is a real (read-only) diagnostic
+ * command. That is why every path that sends one runs behind the identity and
+ * device-type gates in toolbox_wifi_probe() - keep it that way.
+ *
  * The length field is what the firmware calls `size`, and for JOIN it is not
  * advisory: scsiNetworkWifiJoin() rejects the command outright unless it says
  * exactly sizeof(struct wifi_join_request).
@@ -222,25 +229,101 @@ static const char *wifi_identity_accepted(const char *identity)
 	return NULL;
 }
 
-int toolbox_wifi_probe(int dev, const char *identity, int probe)
+/*
+ * The peripheral-device-type floor under every 0x1C we send.
+ *
+ * 0x1C is RECEIVE DIAGNOSTIC RESULTS in standard SCSI (see wifi_cdb() above),
+ * so to anything that is not the firmware's network target our probe is a
+ * real, if read-only, diagnostic command. The identity check above is the
+ * primary gate; this is the belt to its braces, and unlike the identity check
+ * it holds even under -F, because -F exists for "an unrecognised BlueSCSI",
+ * never for "send RECEIVE DIAGNOSTIC RESULTS to my disk".
+ *
+ * The floor refuses the INQUIRY types that plainly cannot be the radio and
+ * admits processor (0x03 - what the DaynaPort presents), communications
+ * (0x09 - what a network device properly is) and the reserved/vendor/unknown
+ * codes, so a future firmware personality with an odd type still gets through
+ * under -F.
+ */
+static int wifi_pdt_allowed(int pdt)
+{
+	switch (pdt & 0x1F) {
+	case 0x00:              /* disk */
+	case 0x01:              /* tape */
+	case 0x02:              /* printer */
+	case 0x04:              /* WORM */
+	case 0x05:              /* CD-ROM */
+	case 0x06:              /* scanner */
+	case 0x07:              /* optical */
+	case 0x08:              /* medium changer */
+	case 0x0C:              /* RAID controller */
+	case 0x0D:              /* enclosure services */
+	case 0x0E:              /* simplified disk */
+		return 0;
+	default:
+		return 1;
+	}
+}
+
+/*
+ * The gating here is a SAFETY boundary, not a speed optimisation: it is the
+ * only thing standing between wifi_cdb()'s standard-opcode 0x1C and every
+ * ordinary device on the bus. See the contract in irixscsitb.h.
+ */
+int toolbox_wifi_probe(int dev, const char *identity, int pdt, int probe)
 {
 	ToolboxDetect det;
 
 	/*
-	 * -F means "I know what I am doing, test it directly", exactly as it
-	 * does for the toolbox: skip the claim and let the command decide.
+	 * Fetch whatever the caller could not supply. This runs even under -F:
+	 * the device-type floor below needs the INQUIRY byte, and a target
+	 * that will not even answer INQUIRY has no business receiving 0x1C.
 	 */
-	if (!force_toolbox) {
-		if (identity == NULL) {
-			if (toolbox_identify(dev, &det) != TOOLBOX_OK)
-				return 0;
+	if (identity == NULL || pdt < 0) {
+		if (toolbox_identify(dev, &det) != TOOLBOX_OK)
+			return 0;
+		if (identity == NULL)
 			identity = det.identity;
-		}
+		if (pdt < 0)
+			pdt = det.inq.dev_type;
+	}
+
+	/*
+	 * The device-type floor - deliberately ahead of, and independent of,
+	 * the -F escape hatch: a disk stays a disk no matter how hard the
+	 * operator forces. Loud when the operator forced a named device and
+	 * was refused anyway; quiet during a bus scan, where refusing storage
+	 * targets is simply the normal case.
+	 */
+	if (!wifi_pdt_allowed(pdt)) {
+		if (force_toolbox && !probe)
+			fprintf(stderr, "Refusing Wi-Fi probe: 0x1C is RECEIVE DIAGNOSTIC "
+					"RESULTS and '%s' is a %s-type device, not a "
+					"network target. -F does not override this.\n",
+				identity, inquiry_pdt_name((unsigned char)pdt));
+		else if (verbose)
+			fprintf(stdout, "Wi-Fi probe withheld from '%s': a %s-type "
+					"device cannot be the radio\n",
+				identity, inquiry_pdt_name((unsigned char)pdt));
+		return 0;
+	}
+
+	if (!force_toolbox) {
 		if (wifi_identity_accepted(identity) == NULL)
 			return 0;
 		if (verbose)
 			fprintf(stdout, "Claims a Wi-Fi radio via INQUIRY identity '%s'\n",
 				identity);
+	} else if (wifi_identity_accepted(identity) == NULL) {
+		/*
+		 * -F means "I know what I am doing, test it directly", exactly
+		 * as it does for the toolbox - but say so out loud: the 0x1C
+		 * about to go out is a standard opcode aimed at a device we
+		 * could not positively identify.
+		 */
+		fprintf(stderr, "Warning: -F: sending Wi-Fi probe (0x1C, RECEIVE "
+				"DIAGNOSTIC RESULTS) to unrecognised %s-type device '%s'\n",
+			inquiry_pdt_name((unsigned char)pdt), identity);
 	}
 
 	return toolbox_wifi_confirm(dev, probe);
@@ -269,7 +352,7 @@ int toolbox_wifi_find(char *path, int pathlen)
 		if (dev < 0)
 			continue;
 
-		if (toolbox_wifi_probe(dev, NULL, 1)) {
+		if (toolbox_wifi_probe(dev, NULL, -1, 1)) {
 			scsi_close(dev);
 			strncpy(path, paths[i], pathlen - 1);
 			path[pathlen - 1] = '\0';

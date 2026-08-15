@@ -256,7 +256,7 @@ static int cli_wifi_open(const char *path, int for_write)
 		return -1;
 	}
 
-	if (!toolbox_wifi_probe(dev, NULL, 0)) {
+	if (!toolbox_wifi_probe(dev, NULL, -1, 0)) {
 		fprintf(stderr, "Error: %s is not the Wi-Fi device.\n", path);
 		fprintf(stderr, "It did not answer the Wi-Fi info command (0x1C/0x04).\n");
 		scsi_close(dev);

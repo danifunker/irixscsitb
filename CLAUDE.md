@@ -419,6 +419,17 @@ opcode rather than reject it. Checking the *shape* of the reply is what
 separates them. (That the standard meaning is a read-only command is also why
 probing every node with it is safe.)
 
+Because `0x1C` is a standard opcode, the gates in `toolbox_wifi_probe()` are a
+**safety boundary, not a speed optimisation**: nothing may send a Wi-Fi CDB
+without passing them. Besides the identity claim there is a
+peripheral-device-type floor (`wifi_pdt_allowed()`) refusing plainly-non-network
+INQUIRY types (disk, tape, CD, …); the floor is the one gate `-F` does **not**
+skip — `-F` exists for "an unrecognised BlueSCSI", not for aiming RECEIVE
+DIAGNOSTIC RESULTS at a disk — and a forced probe of a device that passes the
+floor without being positively identified warns on stderr before sending. The
+mock bus enforces the contract: any `0x1C` reaching a storage-type mock node
+aborts `make test`.
+
 Three protocol facts worth keeping in mind when editing `wifi.c`:
 
 - **The CDB is six bytes.** Everything else in this codebase sends ten. The
