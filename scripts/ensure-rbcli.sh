@@ -70,10 +70,13 @@ url=$(gh api "repos/$RB_REPO/releases/latest" \
 mkdir -p "$INSTALL_DIR"
 tmp="$INSTALL_DIR/.rb-cli-download"
 curl -fsSL "$url" -o "$tmp"
-case "$pat" in
-	*tar.gz*) tar -C "$INSTALL_DIR" -xzf "$tmp" rb-cli ;;
-	*)        command -v unzip >/dev/null 2>&1 || die "need unzip for the macOS rb-cli asset"
+# Dispatch on the resolved URL, not $pat — the pattern spells its dots as \.
+# so a *tar.gz* glob never matched it and the tarball went to unzip.
+case "$url" in
+	*.tar.gz) tar -C "$INSTALL_DIR" -xzf "$tmp" rb-cli ;;
+	*.zip)    command -v unzip >/dev/null 2>&1 || die "need unzip for the macOS rb-cli asset"
 	          unzip -q -o "$tmp" rb-cli -d "$INSTALL_DIR" ;;
+	*)        die "unexpected rb-cli asset type: $url" ;;
 esac
 rm -f "$tmp"
 chmod +x "$INSTALL_DIR/rb-cli"
