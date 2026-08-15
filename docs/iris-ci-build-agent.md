@@ -60,7 +60,7 @@ Every Linux `IRIS-cli-*` release archive from the IRIS pipeline now ships **both
 binaries, flat at the archive root:
 
 ```
-$ tar tzf IRIS-cli-lightning-linux-x64-<ver>.tar.gz
+$ tar tzf IRIS-cli-r4400-linux-x64-<ver>.tar.gz
 iris
 iris-ci
 LICENSE
@@ -74,13 +74,14 @@ long pole of the o32 job). Use **`scripts/fetch-iris.sh`** instead:
 ```sh
 # Drops iris + iris-ci into iris/target/release/ — the layout
 # scripts/iris-build.sh --iris-dir iris already expects.
-scripts/fetch-iris.sh --dir iris          # latest danifunker/iris release, lightning, host arch
+scripts/fetch-iris.sh --dir iris          # latest danifunker/iris release, host arch
 ```
 
-Pick the `lightning` variant: it's the fastest end-user build and is compiled
-with `chd` (boots `.chd`) + the always-on NFS server `iris-build.sh` mounts.
-(Every variant carries `iris-ci` and `chd`; lightning is just quickest. Interactive
-debugging is disabled, which headless CI never needs.)
+The script tries the `r4400` variant first — iris releases since
+v2026-08-13-11-14 ship per-emulated-CPU builds (`r4400`/`r5000`), and r4400 is
+the Indy both guests boot (an R5000 Indy needs IRIX 6.2+, so it covers 5.3 and
+6.5 alike) — then falls back to `lightning` for tags from before the rename.
+(Every variant carries `iris-ci` and `chd`.)
 
 ### Wiring it into `release.yml`
 

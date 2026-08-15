@@ -709,7 +709,9 @@ selects it on IRIX and it would not compile there.
   `iris` + `iris-ci` flat on all targets (verified 2026-07-28, incl. a full
   o32 build driven by the prebuilt macOS pair). `scripts/fetch-iris.sh`
   extracts layout-tolerantly and fails with the exact workaround if an old
-  tag is pinned.
+  tag is pinned. Since v2026-08-13-11-14 the variants are per-emulated-CPU
+  (`r4400`/`r5000`, no more `lightning`); the script tries `r4400` first and
+  falls back to `lightning`, so tags on either side of the rename both work.
 - **Wi-Fi is written from the firmware source and two host implementations, and
   has NOT yet been run against real hardware.** The protocol was taken from
   BlueSCSI's `lib/SCSI2SD/src/firmware/network.c` / `network.h` and

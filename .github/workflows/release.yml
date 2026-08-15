@@ -109,7 +109,7 @@ jobs:
     outputs:
       flavors: ${{ steps.m.outputs.flavors }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check image sources; compute the flavor matrix
         id: m
         run: |
@@ -149,7 +149,7 @@ jobs:
     runs-on: ${{ github.event.inputs.runner_label || 'ubuntu-latest' }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install runtime libraries (Linux runners)
         if: runner.os == 'Linux'
@@ -174,7 +174,7 @@ jobs:
 
       - name: Cache the boot disk download
         if: steps.dk.outputs.key != 'local'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: guest-disk-${{ matrix.flavor }}.chd
           key: irix-${{ matrix.flavor }}-disk-${{ steps.dk.outputs.key }}
@@ -192,7 +192,7 @@ jobs:
             --gui-out "scsitbgui-${{ matrix.flavor }}"
           file "irixscsitb-${{ matrix.flavor }}" || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: irix-${{ matrix.flavor }}
           # The GUI is best-effort (an image without Motif dev still yields the
@@ -206,9 +206,9 @@ jobs:
     needs: [version, build-native]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Pattern + merge so a disabled flavor's absent artifact is no error.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: irix-*
           merge-multiple: true
@@ -219,7 +219,7 @@ jobs:
           ./scripts/package-dist.sh \
             --version "${{ needs.version.outputs.version }}" \
             --dir dist --rb-cli "$RB"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-images
           path: |
@@ -231,13 +231,13 @@ jobs:
     needs: [version, build-native, package]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: irix-*
           merge-multiple: true
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist-images
           path: dist

@@ -13,16 +13,18 @@
 # consumes them exactly as if you'd built there (it looks for
 # <dir>/target/release/{iris,iris-ci}).
 #
-# WHY the `lightning` variant: it's the fastest end-user build and is compiled
-# with the `chd` feature (boots .chd disks) + the always-on in-core NFS server
-# that iris-build.sh mounts to move files in/out. It disables interactive
-# debugging, which headless CI never needs. Every IRIS-cli-* variant carries
-# iris-ci and chd; lightning is just the quickest.
+# WHICH variant: iris releases since v2026-08-13-11-14 ship per-emulated-CPU
+# builds (`r4400` / `r5000`) instead of the old lightning/pcap/jitv2 set. We
+# prefer `r4400` — the Indy CPU both guests here boot (an R5000 Indy needs
+# IRIX 6.2+, so r4400 covers 5.3 AND 6.5) — and fall back to `lightning` (the
+# fast chd+NFS build) so tags from before the rename keep working. Every
+# IRIS-cli-* variant carries iris-ci and chd. `--variant` forces one name and
+# disables the fallback.
 #
 # Usage:
 #   scripts/fetch-iris.sh [--dir iris] [--repo danifunker/iris] [--tag latest]
 #                         [--os linux|macos|windows] [--arch x64|arm64|riscv64]
-#                         [--variant lightning]
+#                         [--variant r4400]
 #
 # --os/--arch are auto-detected from uname, so the same call works on a
 # GitHub-hosted Ubuntu runner, a self-hosted Mac, a riscv64 box, or Git Bash
@@ -55,7 +57,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 DIR="iris"                 # output dir; binaries land in <DIR>/target/release/
 SRC_REPO=""                # release repo; --repo > $IRIS_RELEASE_REPO/conf > default
 TAG=""                     # release tag;  --tag  > $IRIS_TAG/conf > latest
-VARIANT="lightning"        # IRIS-cli-<variant>-... ; lightning is chd+nfs, fastest
+VARIANT=""                 # IRIS-cli-<variant>-... ; empty = r4400, then lightning
 OS=""                      # auto-detected from uname -s if empty (linux / macos)
 ARCH=""                    # auto-detected from uname -m if empty
 
@@ -110,36 +112,47 @@ esac
 
 # Asset name shape from IRIS's release pipeline (version is embedded; match on
 # the stable prefix + archive suffix so we don't have to know the version).
-ASSET_RE="^IRIS-cli-${VARIANT}-${OS}-${ARCH}-.*${AEXT_RE}$"
+# Variants are tried in order; a forced --variant is the only candidate.
+[ -n "$VARIANT" ] && CANDIDATES="$VARIANT" || CANDIDATES="r4400 lightning"
 
-echo ">>> resolving $VARIANT/$ARCH asset in $SRC_REPO ($TAG)"
-URL=""
-if command -v gh >/dev/null 2>&1; then
-	URL=$(gh api "repos/$SRC_REPO/$RELPATH" \
-		--jq ".assets[] | select(.name|test(\"$ASSET_RE\")) | .browser_download_url" \
-		2>/dev/null | head -1) || URL=""
-fi
-# On an HTTP error gh prints the error JSON BODY to stdout (and head masks the
-# exit code), so anything that isn't a https URL is a non-answer — fall through
-# to the curl path, whose own failure leaves URL empty for the die below.
-case "$URL" in https://*) ;; *) URL="" ;; esac
-if [ -z "$URL" ]; then
-	# curl fallback: pull the release JSON and grep the download URL directly.
-	# (Auth header via an explicit branch rather than a ${VAR:+...} one-liner —
-	# plainer to read, and immune to any shell's quoting-in-expansion quirks.)
-	command -v curl >/dev/null 2>&1 || die "need gh or curl to fetch the release"
-	API="https://api.github.com/repos/$SRC_REPO/$RELPATH"
-	if [ -n "${GH_TOKEN:-}" ]; then
-		_json=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
-			-H "Accept: application/vnd.github+json" "$API") || _json=""
-	else
-		_json=$(curl -fsSL -H "Accept: application/vnd.github+json" "$API") || _json=""
+resolve_url() {	# $1 = variant; echoes the asset download URL, or nothing
+	_re="^IRIS-cli-$1-${OS}-${ARCH}-.*${AEXT_RE}$"
+	_url=""
+	if command -v gh >/dev/null 2>&1; then
+		_url=$(gh api "repos/$SRC_REPO/$RELPATH" \
+			--jq ".assets[] | select(.name|test(\"$_re\")) | .browser_download_url" \
+			2>/dev/null | head -1) || _url=""
 	fi
-	URL=$(printf '%s' "$_json" \
-		| grep -oE "https://[^\"]*IRIS-cli-${VARIANT}-${OS}-${ARCH}-[^\"]*\.${AEXT}" \
-		| head -1)
-fi
-[ -n "$URL" ] || die "no IRIS-cli-$VARIANT-$OS-$ARCH asset found in $SRC_REPO $TAG"
+	# On an HTTP error gh prints the error JSON BODY to stdout (and head masks
+	# the exit code), so anything that isn't a https URL is a non-answer — fall
+	# through to the curl path, whose own failure leaves _url empty.
+	case "$_url" in https://*) ;; *) _url="" ;; esac
+	if [ -z "$_url" ]; then
+		# curl fallback: pull the release JSON and grep the download URL directly.
+		# (Auth header via an explicit branch rather than a ${VAR:+...} one-liner —
+		# plainer to read, and immune to any shell's quoting-in-expansion quirks.)
+		command -v curl >/dev/null 2>&1 || die "need gh or curl to fetch the release"
+		API="https://api.github.com/repos/$SRC_REPO/$RELPATH"
+		if [ -n "${GH_TOKEN:-}" ]; then
+			_json=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+				-H "Accept: application/vnd.github+json" "$API") || _json=""
+		else
+			_json=$(curl -fsSL -H "Accept: application/vnd.github+json" "$API") || _json=""
+		fi
+		_url=$(printf '%s' "$_json" \
+			| grep -oE "https://[^\"]*IRIS-cli-$1-${OS}-${ARCH}-[^\"]*\.${AEXT}" \
+			| head -1)
+	fi
+	printf '%s' "$_url"
+}
+
+URL=""
+for v in $CANDIDATES; do
+	echo ">>> resolving $v/$ARCH asset in $SRC_REPO ($TAG)"
+	URL=$(resolve_url "$v")
+	if [ -n "$URL" ]; then VARIANT="$v"; break; fi
+done
+[ -n "$URL" ] || die "no IRIS-cli-{$(printf '%s' "$CANDIDATES" | tr ' ' '|')}-$OS-$ARCH asset found in $SRC_REPO $TAG"
 
 echo ">>> downloading $URL"
 DEST="$DIR/target/release"
