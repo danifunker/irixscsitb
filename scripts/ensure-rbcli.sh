@@ -60,8 +60,11 @@ esac
 
 command -v gh >/dev/null 2>&1 || die "need gh to locate the rb-cli release (or install rb-cli / set \$RB_CLI)"
 echo "ensure-rbcli: fetching $pat from $RB_REPO" >&2
+# jq string literals need \\ where the regex has \ — newer jq hard-errors on
+# "\." as an invalid string escape (older jq merely tolerated it).
+jqpat=$(printf '%s' "$pat" | sed 's/\\/\\\\/g')
 url=$(gh api "repos/$RB_REPO/releases/latest" \
-	--jq ".assets[] | select(.name|test(\"^$pat$\")) | .browser_download_url" | head -1)
+	--jq ".assets[] | select(.name|test(\"^$jqpat$\")) | .browser_download_url" | head -1)
 [ -n "$url" ] || die "no asset matching $pat in $RB_REPO's latest release"
 
 mkdir -p "$INSTALL_DIR"

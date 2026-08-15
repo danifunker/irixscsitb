@@ -166,7 +166,11 @@ jobs:
 
       - name: Provide rb-cli
         id: rb
-        run: echo "path=$(./scripts/ensure-rbcli.sh)" >> "$GITHUB_OUTPUT"
+        # Two statements: inside echo "path=$(...)" a provisioning failure was
+        # swallowed and the step went green with an empty path.
+        run: |
+          RB=$(./scripts/ensure-rbcli.sh)
+          echo "path=$RB" >> "$GITHUB_OUTPUT"
 
       - name: Compute disk cache key
         id: dk
