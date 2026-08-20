@@ -221,11 +221,23 @@ The `.iso`/`.hda` are also emitted **gzipped** (`.iso.gz`/`.hda.gz` — the
 distribution artifacts; the images are mostly empty space) with raws kept
 for direct IRIS attachment; `--no-gzip` skips. EFS volume label defaults to
 **`SCSITB`** (`--name`, ≤6 bytes — what the IRIX desktop shows; `BSTOOL`
-was a bstoolbox-era leftover). The Actions workflow does NOT pass --version
-to builds yet (per-OS gendist in CI pending; packaging degrades gracefully
-without inst53/inst65). Serial-driving lessons (inst pagers, prompt sync,
-never-quit-inst, 5.3 `mkdir -p` erroring on existing dirs) are in
+was a bstoolbox-era leftover). Serial-driving lessons (inst pagers, prompt
+sync, never-quit-inst, 5.3 `mkdir -p` erroring on existing dirs) are in
 docs/ci-iris.md.
+
+**The products are load-bearing, so nothing may drop them silently.** The
+whole `dist/` tree — binaries *and* `inst53/`/`inst65/` — is what moves
+between the Actions jobs; uploading only the binaries is exactly how
+v2026-08-15-14-58 shipped with no `.tardist` and raw binaries inside its
+media, while every step stayed green. Three guards now close that: the
+build passes `--require-gendist` (a guest that cannot package **fails the
+job**), `package-dist.sh` refuses a flavor whose binary is present but whose
+product is not, and `publish-release.sh` warns on the same mismatch. All
+three are governed by the single `BUILD_INST` switch (`build_inst` dispatch
+input / repo var, `--skip-inst` locally) — turn it off and the degraded
+build is allowed *because it was asked for*. The workflow also passes
+`--version` to the builds, so the inst version comes from the release rather
+than from each job's own clock.
 
 `.github/workflows/release.yml` builds BOTH flavors natively in IRIS — one
 matrixed `build-native` job, prebuilt emulator binaries via

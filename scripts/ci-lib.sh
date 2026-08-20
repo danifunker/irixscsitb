@@ -66,6 +66,15 @@ resolve_disk_url() {
 	eval "printf %s \"\${$_k:-}\""
 }
 
+# switch_on VALUE — a BUILD_* toggle reads as on unless it is an explicit
+# "off" (0/no/false/off, any case). Empty (unset) means on.
+switch_on() {
+	case "$1" in
+		0|[Nn][Oo]|[Ff][Aa][Ll][Ss][Ee]|[Oo][Ff][Ff]) return 1 ;;
+		*) return 0 ;;
+	esac
+}
+
 # flavor_enabled FLAVOR — BUILD_O32 / BUILD_N32 switches; enabled unless the
 # value reads as an explicit "off" (0/no/false/off, any case).
 flavor_enabled() {
@@ -74,11 +83,16 @@ flavor_enabled() {
 		n32) _e="${BUILD_N32:-1}" ;;
 		*)   return 1 ;;
 	esac
-	case "$_e" in
-		0|[Nn][Oo]|[Ff][Aa][Ll][Ss][Ee]|[Oo][Ff][Ff]) return 1 ;;
-		*) return 0 ;;
-	esac
+	switch_on "$_e"
 }
+
+# inst_enabled — BUILD_INST: are the Software Manager products part of this
+# release? Read by iris-build.sh (run the guest's gendist, and REQUIRE it),
+# package-dist.sh (require the product dirs rather than silently falling back
+# to raw binaries) and release-local.sh (--skip-inst). One switch, so a
+# release can never half-decide: either every built flavor ships an inst
+# product or none do.
+inst_enabled() { switch_on "${BUILD_INST:-1}"; }
 
 # stage_inst_inputs FLAVOR DISTVER DESTDIR — write the version-stamped,
 # flavor-specific inst product description (irixscsitb.spec + .idb) into

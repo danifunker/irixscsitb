@@ -96,7 +96,21 @@ binaries — the format every inst from 5.3 through 6.5 reads — and the 6.5
 guest a 6.5-format product for its n32 binaries. Packaging places them at
 `/dist53` and `/dist65` on the media (mediad + `inst -f /CDROM/dist53` just
 work) and emits per-flavor `.tardist` artifacts. `--no-gendist` (or
-`BUILD_INST=0`) skips it; a guest without gendist skips it with a warning.
+`BUILD_INST=0`) skips it; a guest without gendist skips it with a warning —
+unless `--require-gendist` was passed, which the release pipelines do.
+
+**Getting them out of the build job is the part that bit us.** The products
+are generated on the build runner, next to the binaries, so whatever moves
+between CI jobs has to carry the *whole* `dist/` tree. When the artifact
+upload listed only `irixscsitb-<flavor>`/`scsitbgui-<flavor>`, the packaging
+job saw no `inst53`/`inst65`, fell back to putting raw binaries in `/dist53`
+and `/dist65`, cut no `.tardist` — and every step stayed green, because that
+fallback is legitimate for a guest without gendist. If you adapt this
+pipeline: whenever a stage *may* legitimately degrade, make the degradation
+require an explicit switch. Here that is `BUILD_INST`, honoured by
+`iris-build.sh --require-gendist` (fail the build rather than skip),
+`package-dist.sh` (refuse a built flavor with no product) and
+`publish-release.sh` (warn when a binary ships without its `.tardist`).
 
 gendist ships in the **`inst_dev.sw`** subsystem ("Software Packager"). If a
 5.3 image lacks it, set `IRIX53_IDO_ISO` in `ci/local.conf` and

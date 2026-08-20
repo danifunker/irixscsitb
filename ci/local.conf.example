@@ -58,7 +58,10 @@ IRIX65_IMAGE=/path/to/irix65-dev.chd
 # never quits inst, resolves conflicts, or removes anything):
 #IRIX53_IDO_ISO=/path/to/IRIS-Development-Option-5.3.iso
 #
-# Skip building the Software Manager products entirely:
+# Skip building the Software Manager products entirely. With this ON (the
+# default), a guest that cannot run gendist FAILS the build instead of
+# quietly producing media with raw binaries and no .tardist; set it to 0 when
+# that degraded release is genuinely what you want:
 #BUILD_INST=1
 
 # ---- tools ---------------------------------------------------------------------

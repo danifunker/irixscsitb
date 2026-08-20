@@ -42,15 +42,20 @@
 #   scripts/iris-build.sh --flavor o32 [--image /path/to/irix53.chd] \
 #       [--iris-dir ../iris] [--config ci/iris-irix53.toml] [--rb-cli rb-cli] \
 #       [--outdir dist] [--workdir DIR] [--fresh] [--version V] \
-#       [--no-package] [--no-gendist] [--bin-out PATH] [--gui-out PATH]
+#       [--no-package] [--no-gendist] [--require-gendist] \
+#       [--bin-out PATH] [--gui-out PATH]
 #
-# PACKAGING BY THE OS THAT BUILT IT: unless --no-gendist, the same guest
-# session also runs ITS OWN native gendist over inst/irixscsitb.{spec,idb},
-# emitting the Software Manager product trio to $OUTDIR/inst53 (o32 flavor)
-# or $OUTDIR/inst65 (n32) — a 5.3-format product from the 5.3 guest, a
-# 6.5-format one from the 6.5 guest. If the guest has no /usr/sbin/gendist
-# (the inst_dev.sw "Software Packager" subsystem), the step is skipped with a
-# warning — scripts/iris-gendist.sh can provision it from the IDO CD.
+# PACKAGING BY THE OS THAT BUILT IT: unless --no-gendist (or BUILD_INST=0),
+# the same guest session also runs ITS OWN native gendist over
+# inst/irixscsitb.{spec,idb}, emitting the Software Manager product trio to
+# $OUTDIR/inst53 (o32 flavor) or $OUTDIR/inst65 (n32) — a 5.3-format product
+# from the 5.3 guest, a 6.5-format one from the 6.5 guest. If the guest has no
+# /usr/sbin/gendist (the inst_dev.sw "Software Packager" subsystem), the step
+# is skipped with a warning — scripts/iris-gendist.sh can provision it from
+# the IDO CD. --require-gendist turns that skip into a hard failure, which is
+# what the release pipelines pass: a release that silently drops its .tardists
+# and ships raw binaries inside the media looks fine until someone tries to
+# `inst` it.
 #
 # WHERE THE BOOT DISK COMES FROM (first match wins):
 #   1. --image PATH
@@ -79,6 +84,7 @@ WORKDIR=""
 FRESH=0
 DO_PACKAGE=1
 DO_GENDIST=1
+REQ_GENDIST=0
 BIN_OUT=""
 GUI_OUT=""
 ROOT_PW="${IRIX_ROOT_PASSWORD:-}"
@@ -98,15 +104,20 @@ while [ $# -gt 0 ]; do
 		--fresh)      FRESH=1; shift ;;
 		--no-package) DO_PACKAGE=0; shift ;;
 		--no-gendist) DO_GENDIST=0; shift ;;
+		--require-gendist) REQ_GENDIST=1; shift ;;
 		--bin-out)    BIN_OUT="$2"; shift 2 ;;
 		--gui-out)    GUI_OUT="$2"; shift 2 ;;
-		-h|--help)    sed -n '2,56p' "$0"; exit 0 ;;
+		-h|--help)    sed -n '2,62p' "$0"; exit 0 ;;
 		*)            die "unknown option: $1" ;;
 	esac
 done
 
 load_local_conf   # ci/local.conf fills in whatever flags/env didn't set
 [ -n "$RB" ] || RB="${RB_CLI:-rb-cli}"
+# BUILD_INST=0 (env, ci/local.conf, or the workflow's build_inst input) turns
+# the Software Manager products off everywhere at once; --no-gendist is the
+# per-invocation form. Either way --require-gendist becomes moot.
+inst_enabled || DO_GENDIST=0
 
 # ---- validate arguments ----------------------------------------------------
 case "$FLAVOR" in
@@ -306,6 +317,16 @@ if [ "$DO_GENDIST" = 1 ]; then
 		# Plain grep: 5.3's old awk can't be trusted with system().
 		ser_send "cd /tmp/pk && (test -f bin/scsitbgui && cp irixscsitb.idb idb.f || grep -v scsitbgui irixscsitb.idb | grep -v scsitoolbox > idb.f) && gendist -verbose -sbase /tmp/pk -idb /tmp/pk/idb.f -spec /tmp/pk/irixscsitb.spec -dist /tmp/pk/dist -all && cp dist/* /mnt/out/inst/ && cd /tmp/bsbuild && echo PK-'GEN'-OK || echo PK-'GEN'-FAIL"
 		ser_wait_long "PK-GEN-OK" 2 "gendist" || { tail -20 "$CONSOLE" >&2; exit 1; }
+	elif [ "$REQ_GENDIST" = 1 ]; then
+		# The release pipelines pass --require-gendist precisely so this
+		# cannot pass silently: without the product the media fall back to
+		# raw binaries and no .tardist is cut, which looks like a healthy
+		# release until someone tries to install it.
+		die "guest has no /usr/sbin/gendist (the inst_dev.sw \"Software Packager\"
+  subsystem), so no Software Manager product can be built for $FLAVOR.
+  Fix: install inst_dev.sw in the boot image (scripts/iris-gendist.sh can
+  provision it from the IDO CD via IRIX53_IDO_ISO), or release without the
+  products by passing --no-gendist / setting BUILD_INST=0."
 	else
 		echo ">>> WARNING: guest has no /usr/sbin/gendist (inst_dev.sw not installed);"
 		echo ">>>          skipping the Software Manager product for $FLAVOR."

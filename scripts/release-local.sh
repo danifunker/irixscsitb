@@ -88,11 +88,14 @@ fi
 [ "$DO_O32" = 1 ] || [ "$DO_N32" = 1 ] || die "nothing to build — both flavors are disabled"
 
 # Software Manager products: each guest packages its OWN build with its own
-# gendist inside the build session (iris-build.sh); this only decides whether
-# to pass --no-gendist through.
-GD_ARG=""
-[ "$SKIP_INST" = 1 ] && GD_ARG="--no-gendist"
-case "${BUILD_INST:-1}" in 0|[Nn][Oo]|[Ff][Aa][Ll][Ss][Ee]|[Oo][Ff][Ff]) GD_ARG="--no-gendist" ;; esac
+# gendist inside the build session (iris-build.sh). --skip-inst is folded into
+# BUILD_INST so every downstream script sees ONE switch — in particular
+# package-dist.sh, which otherwise (rightly) refuses to package a built flavor
+# that has no product.
+[ "$SKIP_INST" = 0 ] || BUILD_INST=0
+export BUILD_INST="${BUILD_INST:-1}"
+GD_ARG="--require-gendist"
+inst_enabled || GD_ARG="--no-gendist"
 
 [ -n "$VERSION" ] || VERSION=$(date -u +%Y-%m-%d-%H-%M)
 [ -n "$OUTDIR" ] || OUTDIR="$REPO/dist/release-$VERSION"
