@@ -3,7 +3,7 @@
 This repo doubles as a **sample project** for compiling native IRIX software on
 modern infrastructure — a GitHub-hosted runner, a self-hosted runner, or any
 Linux/macOS box — by booting a real IRIX installation inside the
-[IRIS emulator](https://github.com/danifunker/iris) and driving its native
+[IRIS emulator](https://github.com/techomancer/iris) and driving its native
 MIPSpro toolchain over the serial console. No cross-compiler, no networking
 inside the guest, and the boot disk image is never modified.
 
@@ -211,10 +211,17 @@ Two ways to supply the images:
   and `irix53_image` / `irix65_image` set to absolute `.chd` paths on that
   machine — nothing is downloaded and the images never leave your infra.
 
+Worth knowing: the upstream iris releases also publish two installed dev
+disks, `Indy-IRIX53_dev.chd` and `Indy-IRIX65_dev.chd`, and both carry what
+this pipeline needs (MIPSpro `cc`, `make`, `gendist`, `sys/dsreq.h`, Motif
+1.2 headers). Whether to build from a publicly hosted IRIX image is your
+call; this project keeps the private-URL secrets as its default.
+
 The emulator itself comes prebuilt from the iris releases, **tracking `latest`
 by default**. Pin it with the `IRIS_TAG` repo variable (bump deliberately), or
 per-run with the `iris_tag` dispatch input; `IRIS_RELEASE_REPO` overrides
-which repo the releases come from (default `danifunker/iris`).
+which repo the releases come from (default `techomancer/iris`, the upstream
+emulator; its tags are `v<YYYY-MM-DD-HH-MM>`).
 
 **Enabling/disabling a flavor:** only have one of the two images? The same
 switch exists at every front door — `BUILD_O32=0`/`BUILD_N32=0` in
@@ -250,9 +257,11 @@ tag must point at a pushed commit.
 `fetch-iris.sh` maps every target the IRIS release pipeline publishes CLI
 builds for — linux/macos/windows × x64/arm64 (+ linux-riscv64) — and its
 extraction is layout-tolerant, so it keeps working as the release packaging
-evolves. **Since iris release v2026-07-28-20-04 every CLI archive bundles
-both `iris` and `iris-ci`**, so the prebuilt download is CI-complete on every
-target:
+evolves. Upstream ships **one CLI build per platform** (the emulated CPU is a
+runtime setting, so there are no per-CPU archives), named
+`IRIS-cli-<os>-<arch>-<ver>.tar.gz` (`.zip` on Windows), and **every one
+bundles both `iris` and `iris-ci`** — checked against `v2026-08-31-16-28` — so
+the prebuilt download is CI-complete on every target:
 
 | Host | prebuilt pair | iris-build.sh |
 |---|---|---|

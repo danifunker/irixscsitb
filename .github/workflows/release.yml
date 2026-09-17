@@ -46,7 +46,7 @@ name: Release
 #   secret IRIX65_DISK_URL   same for an installed IRIX 6.5 disk with MIPSpro.
 # Optional:
 #   var IRIS_RELEASE_REPO    repo publishing prebuilt iris CLI releases
-#                            [danifunker/iris]
+#                            [techomancer/iris - the upstream emulator]
 #   var IRIS_TAG             iris release tag to pin [latest]
 #   var BUILD_O32/BUILD_N32  durably disable a flavor ('false'/'0'); the
 #                            build_o32/build_n32 dispatch inputs do it per-run.
@@ -66,6 +66,19 @@ name: Release
 # (Those inputs surface as $IRIX53_IMAGE/$IRIX65_IMAGE — the same variables
 # the scripts honor locally.) Linux and macOS runners both work.
 
+# WHEN IT RUNS:
+#   push to main       build both flavors natively and package them; the run's
+#                      artifacts (irix-o32, irix-n32, dist-images) are the
+#                      result. No release is created, so a broken commit shows
+#                      up as a red run on the commit rather than as a bad
+#                      release.
+#   push of a v* tag   the same, then publish a GitHub release named after the
+#                      tag.
+#   workflow_dispatch  the same as a tag, versioned by the clock; the inputs
+#                      select the runner, the images, the flavors and whether
+#                      the Software Manager products are built.
+# A newer push to main cancels a build still running for an older one; tag and
+# dispatch runs are never cancelled.
 on:
   workflow_dispatch:
     inputs:
@@ -101,11 +114,17 @@ on:
         required: false
         default: true
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref_type == 'branch' }}
 
 # One env block, inherited by every job: the scripts read exactly these
 # variables whether exported here or in a developer's shell.
@@ -184,7 +203,7 @@ jobs:
       - name: Fetch prebuilt iris + iris-ci
         run: |
           ./scripts/fetch-iris.sh --dir iris \
-            --repo "${{ vars.IRIS_RELEASE_REPO || 'danifunker/iris' }}" \
+            --repo "${{ vars.IRIS_RELEASE_REPO || 'techomancer/iris' }}" \
             --tag  "${{ github.event.inputs.iris_tag || vars.IRIS_TAG || 'latest' }}"
 
       - name: Provide rb-cli
@@ -274,6 +293,9 @@ jobs:
             dist/*.tardist
 
   release:
+    # Only a tag push or a manual dispatch publishes; a push to main stops at
+    # the packaged artifacts (see WHEN IT RUNS at the top).
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     needs: [version, build-native, package]
     runs-on: ubuntu-latest
     steps:

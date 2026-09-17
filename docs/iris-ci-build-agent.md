@@ -56,11 +56,12 @@ fallback (see the commented `[scsi.2]` block in `ci/iris-irix53.toml`).
 
 ## Getting `iris` + `iris-ci`: download prebuilt, don't build from source
 
-Every Linux `IRIS-cli-*` release archive from the IRIS pipeline now ships **both**
-binaries, flat at the archive root:
+Every `IRIS-cli-*` release archive from the upstream IRIS pipeline
+(github.com/techomancer/iris) ships **both** binaries, flat at the archive
+root — one build per platform, no variant in the name:
 
 ```
-$ tar tzf IRIS-cli-r4400-linux-x64-<ver>.tar.gz
+$ tar tzf IRIS-cli-linux-x64-<ver>.tar.gz
 iris
 iris-ci
 LICENSE
@@ -74,14 +75,14 @@ long pole of the o32 job). Use **`scripts/fetch-iris.sh`** instead:
 ```sh
 # Drops iris + iris-ci into iris/target/release/ — the layout
 # scripts/iris-build.sh --iris-dir iris already expects.
-scripts/fetch-iris.sh --dir iris          # latest danifunker/iris release, host arch
+scripts/fetch-iris.sh --dir iris          # latest techomancer/iris release, host arch
+scripts/fetch-iris.sh --resolve-only --os linux --arch x64   # just print the asset URL
 ```
 
-The script tries the `r4400` variant first — iris releases since
-v2026-08-13-11-14 ship per-emulated-CPU builds (`r4400`/`r5000`), and r4400 is
-the Indy both guests boot (an R5000 Indy needs IRIX 6.2+, so it covers 5.3 and
-6.5 alike) — then falls back to `lightning` for tags from before the rename.
-(Every variant carries `iris-ci` and `chd`.)
+The emulated CPU (R4400 / R5000) is a runtime setting in current iris, so the
+per-CPU `r4400`/`r5000` archives — and the `lightning` ones before them — no
+longer exist; the script matches the plain `IRIS-cli-<os>-<arch>-` name (and
+still tolerates a variant token, for a repo that publishes the old shape).
 
 ### Wiring it into `release.yml`
 

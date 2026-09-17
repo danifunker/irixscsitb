@@ -30,9 +30,10 @@
 # delete that file (or pass --fresh) to reset the guest to a pristine state.
 #
 # Prereqs:
-#   - iris + iris-ci binaries: either build ../iris from source
-#     (cargo build --release --features chd,jit,rex-jit,lightning) or fetch
-#     the prebuilt release pair with scripts/fetch-iris.sh.
+#   - iris + iris-ci binaries: either build ../iris (github.com/techomancer/iris)
+#     from source with the chd feature on, or fetch the prebuilt release pair
+#     with scripts/fetch-iris.sh (upstream's CLI builds carry opcodefusion,
+#     rex-jit, lightning, tlbvmap, chd and camera).
 #   - an installed IRIX boot disk (.chd) with the dev tools: cc, make,
 #     /usr/include/sys/dsreq.h; Motif headers if you want the GUI.
 #     Root must have an EMPTY password (or set IRIX_ROOT_PASSWORD).

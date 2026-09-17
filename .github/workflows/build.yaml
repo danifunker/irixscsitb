@@ -1,42 +1,46 @@
 name: Build irixscsitb
 
-# DISABLED - manual only. This was `on: [push]` and is currently BROKEN.
+# The fast check, on every push to main and on every pull request: build the
+# Linux CLI with the real Makefile and run the mock-bus protocol suite
+# (`make test`). No IRIX here - that is release.yml, which also runs on every
+# push to main but spends minutes in the emulator - so this is the job that
+# says within a minute whether the tree still compiles under -std=c89 -Wall
+# and whether detection, a command builder, a listing or the exit-status
+# contract regressed.
 #
-# WHY: the meson build does not know about version.c. `irixscsitb.c` calls
-# build_revision() / build_stamp() / build_compiled() / build_abi() /
-# build_libs(), all defined in version.c, and meson's `srcs` never gained it
-# when version.c was added - so the link fails on five undefined symbols. It
-# would also need the two generated headers (version.h, buildhost.h), which
-# only the Makefile knows how to produce and which are deliberately gitignored.
-#
-# TWO WAYS BACK:
-#   1. Teach meson about it: add 'version.c' to srcs plus custom_targets that
-#      run scripts/mkversion.sh and emit buildhost.h.
-#   2. Better - drop meson from CI and run `make` instead. The Makefile is the
-#      real build path on every platform, already generates both headers, and
-#      testing it means CI exercises what people actually use. `make test` would
-#      then also run the mock-bus suite, which meson never did.
-#
-# Re-enable by restoring `on: [push]` once one of those is done.
+# It used to run `meson setup && meson compile` and was switched to manual
+# only when that stopped linking: meson.build never learned about version.c
+# or the two generated headers (version.h / buildhost.h) that only the
+# Makefile knows how to produce. The Makefile is the real build path on every
+# platform, so CI now exercises exactly what people use; meson.build is
+# unused by CI and unmaintained.
 on:
+  push:
+    branches: ["main"]
+  pull_request:
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout
-      uses: actions/checkout@v7
+      - uses: actions/checkout@v7
 
-    - name: Setup environment
-      run: sudo apt update && sudo apt install build-essential meson
+      - name: Install a C toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
 
-    - name: Setup build
-      run: meson setup build
+      # Linux backend (linux.c, <scsi/sg.h>); version.h / buildhost.h are
+      # stamped by the Makefile's own rules from the checked-out revision.
+      - name: Build the Linux CLI with the Makefile
+        run: make
 
-    - name: Build
-      run: meson compile -C build
+      - name: Report build identification
+        run: ./irixscsitb -version
 
-    # Host-side smoke test against the mock SCSI bus (tests/mock_os.c): the
-    # protocol + two-stage detection logic, no hardware or emulator needed.
-    - name: Protocol smoke test (mock SCSI bus)
-      run: make test
+      # Host-side smoke test against the mock SCSI bus (tests/mock_os.c):
+      # detection, the command builders, Wi-Fi, listings, transfers and the
+      # exit-status contract. No hardware or emulator needed.
+      - name: Protocol smoke test (mock SCSI bus)
+        run: make test

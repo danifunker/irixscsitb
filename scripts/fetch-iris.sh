@@ -1,51 +1,54 @@
 #!/bin/sh
-# Fetch the PREBUILT iris + iris-ci CLI binaries from a danifunker/iris release,
-# so CI (and local builds) don't have to clone + `cargo build` the emulator from
-# source. That source build is the long pole of the o32 release job (Rust
+# Fetch the PREBUILT iris + iris-ci CLI binaries from an iris release, so CI
+# (and local builds) don't have to clone + `cargo build` the emulator from
+# source. That source build is the long pole of a native release job (Rust
 # toolchain + clang/libclang for the chd feature + a full cargo build); a
 # prebuilt download turns minutes into seconds.
 #
-# IRIS's release pipeline ships BOTH binaries, flat, inside the
-# `IRIS-cli-<variant>-linux-<arch>-<ver>.tar.gz` archive:
-#     iris  iris-ci  LICENSE  LICENSE-libchdman-rs.txt
+# WHERE FROM: the upstream emulator, github.com/techomancer/iris (default;
+# `--repo`, $IRIS_RELEASE_REPO or ci/local.conf override it). The old
+# danifunker/iris fork publishes no releases any more - its API answers 404 -
+# so nothing here falls back to it.
+#
+# WHAT: since v2026-08-31-16-28 upstream ships ONE CLI build per platform,
+# named without any variant token:
+#     IRIS-cli-<os>-<arch>-<ver>.tar.gz      linux / macos
+#     IRIS-cli-<os>-<arch>-<ver>.zip         windows
+# each holding, flat:  iris  iris-ci  LICENSE  LICENSE-libchdman-rs.txt
+# The build features (opcodefusion rex-jit lightning tlbvmap chd camera) are
+# all in; the emulated CPU (R4400 / R5000) is a runtime setting, which is why
+# the per-CPU `r4400`/`r5000` archives - and the `lightning` ones before them
+# - are gone. The asset match still tolerates a `IRIS-cli-<variant>-<os>-...`
+# name, so a repo that publishes the old shape keeps working with --repo.
+#
 # We drop iris + iris-ci into <dir>/target/release/ so that
 #     scripts/iris-build.sh --iris-dir <dir>
 # consumes them exactly as if you'd built there (it looks for
 # <dir>/target/release/{iris,iris-ci}).
 #
-# WHICH variant: iris releases since v2026-08-13-11-14 ship per-emulated-CPU
-# builds (`r4400` / `r5000`) instead of the old lightning/pcap/jitv2 set. We
-# prefer `r4400` — the Indy CPU both guests here boot (an R5000 Indy needs
-# IRIX 6.2+, so r4400 covers 5.3 AND 6.5) — and fall back to `lightning` (the
-# fast chd+NFS build) so tags from before the rename keep working. Every
-# IRIS-cli-* variant carries iris-ci and chd. `--variant` forces one name and
-# disables the fallback.
-#
 # Usage:
-#   scripts/fetch-iris.sh [--dir iris] [--repo danifunker/iris] [--tag latest]
+#   scripts/fetch-iris.sh [--dir iris] [--repo techomancer/iris] [--tag latest]
 #                         [--os linux|macos|windows] [--arch x64|arm64|riscv64]
-#                         [--variant r4400]
+#                         [--resolve-only]
 #
 # --os/--arch are auto-detected from uname, so the same call works on a
 # GitHub-hosted Ubuntu runner, a self-hosted Mac, a riscv64 box, or Git Bash
-# on Windows (zip assets; needs `unzip`). Extraction is layout-tolerant: the
+# on Windows (zip assets; needs `unzip`). --resolve-only prints the asset URL
+# it would download and stops - handy for checking a tag or a foreign
+# os/arch pair without pulling the archive. Extraction is layout-tolerant: the
 # archive is unpacked whole and the two binaries are located wherever that
-# target's packaging put them (flat, ./-prefixed, or nested target/.../release).
+# target's packaging put them (flat today; ./-prefixed or nested
+# target/<triple>/release/ have both been seen).
 #
-# Since iris release v2026-07-28-20-04 EVERY target's CLI archive bundles
-# `iris-ci` (verified: linux x64/riscv64, macos-arm64, windows-x64, all flat).
-# Older tags lacked it outside linux x64/arm64 — pinning --tag at one of those
-# fails here with the workaround spelled out. Note also that
-# scripts/iris-build.sh itself is validated on Linux/macOS hosts (Windows
-# would need the TCP control socket; untested).
+# Every upstream CLI archive bundles `iris-ci` on every target (linux
+# x64/arm64/riscv64, macos x64/arm64, windows x64/arm64 - checked against
+# v2026-08-31-16-28). Note that scripts/iris-build.sh itself is validated on
+# Linux/macOS hosts (Windows would need the TCP control socket; untested).
 #
-# In the release workflow this REPLACES the "Clone IRIS source" + "Build iris +
-# iris-ci" steps of build-o32-native:
+# In the release workflow this is the "Fetch prebuilt iris + iris-ci" step:
 #     - name: Fetch prebuilt iris + iris-ci
-#       env: { GH_TOKEN: ${{ github.token }} }
 #       run: ./scripts/fetch-iris.sh --dir iris
-# then keep copying the boot disk to iris/irix53.chd and calling iris-build.sh
-# with --iris-dir iris exactly as before.
+# followed by iris-build.sh --iris-dir iris.
 #
 # Needs: `gh` (authenticated; preferred, matches the rb-cli fetch pattern) OR
 # `curl`; plus `tar`. Honors $GH_TOKEN for the GitHub API.
@@ -57,27 +60,28 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 DIR="iris"                 # output dir; binaries land in <DIR>/target/release/
 SRC_REPO=""                # release repo; --repo > $IRIS_RELEASE_REPO/conf > default
 TAG=""                     # release tag;  --tag  > $IRIS_TAG/conf > latest
-VARIANT=""                 # IRIS-cli-<variant>-... ; empty = r4400, then lightning
 OS=""                      # auto-detected from uname -s if empty (linux / macos)
 ARCH=""                    # auto-detected from uname -m if empty
+RESOLVE_ONLY=0             # print the asset URL and stop
 
 die() { echo "fetch-iris: $*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--dir)     DIR="$2"; shift 2 ;;
-		--repo)    SRC_REPO="$2"; shift 2 ;;
-		--tag)     TAG="$2"; shift 2 ;;
-		--os)      OS="$2"; shift 2 ;;
-		--arch)    ARCH="$2"; shift 2 ;;
-		--variant) VARIANT="$2"; shift 2 ;;
-		-h|--help) sed -n '2,47p' "$0"; exit 0 ;;
-		*)         die "unknown option: $1" ;;
+		--dir)          DIR="$2"; shift 2 ;;
+		--repo)         SRC_REPO="$2"; shift 2 ;;
+		--tag)          TAG="$2"; shift 2 ;;
+		--os)           OS="$2"; shift 2 ;;
+		--arch)         ARCH="$2"; shift 2 ;;
+		--resolve-only) RESOLVE_ONLY=1; shift ;;
+		--variant)      die "--variant is gone: upstream ships one CLI build per platform (see the header)" ;;
+		-h|--help)      sed -n '2,/^set -eu$/{/^set -eu$/!p;}' "$0"; exit 0 ;;
+		*)              die "unknown option: $1" ;;
 	esac
 done
 
 load_local_conf   # ci/local.conf may set IRIS_RELEASE_REPO / IRIS_TAG
-[ -n "$SRC_REPO" ] || SRC_REPO="${IRIS_RELEASE_REPO:-danifunker/iris}"
+[ -n "$SRC_REPO" ] || SRC_REPO="${IRIS_RELEASE_REPO:-techomancer/iris}"
 [ -n "$TAG" ]      || TAG="${IRIS_TAG:-latest}"
 
 # Map the host to the release archive's OS + arch tokens.
@@ -110,26 +114,25 @@ case "$TAG" in
 	*)      RELPATH="releases/tags/$TAG" ;;
 esac
 
-# Asset name shape from IRIS's release pipeline (version is embedded; match on
-# the stable prefix + archive suffix so we don't have to know the version).
-# Variants are tried in order; a forced --variant is the only candidate.
-[ -n "$VARIANT" ] && CANDIDATES="$VARIANT" || CANDIDATES="r4400 lightning"
+# Asset name shape: IRIS-cli-<os>-<arch>-<ver>.<ext>, with an optional variant
+# token between "cli-" and the OS for repos that still publish the old shape.
+# The version is embedded, so match on the stable parts only.
+ASSET_RE="^IRIS-cli-([a-z0-9]+-)?${OS}-${ARCH}-.*${AEXT_RE}\$"
 
-resolve_url() {	# $1 = variant; echoes the asset download URL, or nothing
-	_re="^IRIS-cli-$1-${OS}-${ARCH}-.*${AEXT_RE}$"
+resolve_url() {	# echoes the asset download URL, or nothing
 	_url=""
 	if command -v gh >/dev/null 2>&1; then
 		_url=$(gh api "repos/$SRC_REPO/$RELPATH" \
-			--jq ".assets[] | select(.name|test(\"$_re\")) | .browser_download_url" \
+			--jq ".assets[] | select(.name|test(\"$ASSET_RE\")) | .browser_download_url" \
 			2>/dev/null | head -1) || _url=""
 	fi
 	# On an HTTP error gh prints the error JSON BODY to stdout (and head masks
-	# the exit code), so anything that isn't a https URL is a non-answer — fall
+	# the exit code), so anything that isn't a https URL is a non-answer - fall
 	# through to the curl path, whose own failure leaves _url empty.
 	case "$_url" in https://*) ;; *) _url="" ;; esac
 	if [ -z "$_url" ]; then
 		# curl fallback: pull the release JSON and grep the download URL directly.
-		# (Auth header via an explicit branch rather than a ${VAR:+...} one-liner —
+		# (Auth header via an explicit branch rather than a ${VAR:+...} one-liner -
 		# plainer to read, and immune to any shell's quoting-in-expansion quirks.)
 		command -v curl >/dev/null 2>&1 || die "need gh or curl to fetch the release"
 		API="https://api.github.com/repos/$SRC_REPO/$RELPATH"
@@ -140,19 +143,22 @@ resolve_url() {	# $1 = variant; echoes the asset download URL, or nothing
 			_json=$(curl -fsSL -H "Accept: application/vnd.github+json" "$API") || _json=""
 		fi
 		_url=$(printf '%s' "$_json" \
-			| grep -oE "https://[^\"]*IRIS-cli-$1-${OS}-${ARCH}-[^\"]*\.${AEXT}" \
+			| grep -oE "https://[^\"]*IRIS-cli-([a-z0-9]+-)?${OS}-${ARCH}-[^\"]*\.${AEXT}" \
 			| head -1)
 	fi
 	printf '%s' "$_url"
 }
 
-URL=""
-for v in $CANDIDATES; do
-	echo ">>> resolving $v/$ARCH asset in $SRC_REPO ($TAG)"
-	URL=$(resolve_url "$v")
-	if [ -n "$URL" ]; then VARIANT="$v"; break; fi
-done
-[ -n "$URL" ] || die "no IRIS-cli-{$(printf '%s' "$CANDIDATES" | tr ' ' '|')}-$OS-$ARCH asset found in $SRC_REPO $TAG"
+echo ">>> resolving the $OS-$ARCH CLI asset in $SRC_REPO ($TAG)" >&2
+URL=$(resolve_url)
+[ -n "$URL" ] || die "no IRIS-cli-$OS-$ARCH-*.$AEXT asset in $SRC_REPO $TAG.
+  Upstream (techomancer/iris) publishes that shape from v2026-08-31-16-28 on;
+  check the tag exists there, or point --repo / IRIS_RELEASE_REPO elsewhere."
+
+if [ "$RESOLVE_ONLY" -eq 1 ]; then
+	echo "$URL"
+	exit 0
+fi
 
 echo ">>> downloading $URL"
 DEST="$DIR/target/release"
@@ -162,17 +168,17 @@ if command -v curl >/dev/null 2>&1; then
 	curl -fSL "$URL" -o "$ARCHIVE"
 else
 	# No curl: let gh fetch the asset by pattern (empty tag = latest release).
+	# The glob's leading * also admits an old-style variant token.
 	[ "$TAG" = latest ] && _t="" || _t="$TAG"
 	gh release download ${_t:+"$_t"} --repo "$SRC_REPO" \
-		--pattern "IRIS-cli-${VARIANT}-${OS}-${ARCH}-*.${AEXT}" \
+		--pattern "IRIS-cli-*${OS}-${ARCH}-*.${AEXT}" \
 		--output "$ARCHIVE" --clobber
 fi
 
 echo ">>> extracting iris + iris-ci into $DEST"
 # Unpack the whole archive into a scratch dir and locate the binaries wherever
-# this target's packaging put them — the layouts genuinely differ per OS/arch
-# job (flat on linux x64/arm64 + macos, ./-prefixed on linux-riscv64, nested
-# target/<triple>/release/ inside the windows zips).
+# this target's packaging put them - flat today, but ./-prefixed and nested
+# target/<triple>/release/ layouts have both shipped before.
 UNPACK="$DEST/.iris-unpack.$$"
 rm -rf "$UNPACK"; mkdir -p "$UNPACK"
 case "$ARCHIVE" in
@@ -188,9 +194,9 @@ CI_F=$(find_bin iris-ci)
 [ -n "$IRIS_F" ] || { rm -rf "$UNPACK"; die "no iris binary inside the $OS-$ARCH archive"; }
 if [ -z "$CI_F" ]; then
 	rm -rf "$UNPACK"
-	die "the $OS-$ARCH release archive has no iris-ci — releases BEFORE
-  v2026-07-28-20-04 only bundled it on linux x64/arm64. Use a newer --tag,
-  or build it from source and drop it in place:
+	die "the $OS-$ARCH archive has no iris-ci. Every upstream CLI archive from
+  v2026-08-31-16-28 on bundles it; an older or foreign release may not. Use a
+  newer --tag, or build it from source and drop it in place:
       (cd ../iris && cargo build --release --bin iris-ci --features chd)
       cp ../iris/target/release/iris-ci $DEST/
   or skip fetch-iris.sh entirely and point iris-build.sh --iris-dir at a

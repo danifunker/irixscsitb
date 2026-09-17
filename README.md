@@ -177,7 +177,7 @@ for direct IRIS attachment.
 
 The release artifacts are compiled by **real IRIX**. The pipeline boots
 installed IRIX 5.3 and 6.5 system disks headless in the
-[IRIS emulator](https://github.com/danifunker/iris) and drives each guest's
+[IRIS emulator](https://github.com/techomancer/iris) and drives each guest's
 own MIPSpro `cc` over the emulated serial console. This repo doubles as a
 **sample project** for building any IRIX software this way — the deep-dive is
 [`docs/ci-iris.md`](docs/ci-iris.md); the short version:
@@ -195,6 +195,10 @@ own MIPSpro `cc` over the emulated serial console. This repo doubles as a
   plain local run all execute the *same* scripts (`scripts/fetch-iris.sh`,
   `ensure-rbcli.sh`, `fetch-image.sh`, `iris-build.sh`, `package-dist.sh`,
   `publish-release.sh`) — the YAML step bodies are one-liners.
+- **Every push to `main` is built.** The same native build and packaging run
+  as a check on each push (artifacts only — a release is cut only by a `v*`
+  tag or a manual dispatch), next to a one-minute Linux `make` + `make test`
+  job that also runs on pull requests.
 
 ### Setup (once): `ci/local.conf`
 
@@ -215,7 +219,7 @@ conf):
 | `IRIX53_DISK_URL` / `IRIX65_DISK_URL` | private download URLs instead of local paths |
 | `BUILD_O32=0` / `BUILD_N32=0` | disable a flavor (only have one image? turn the other off) |
 | `IRIS_DIR` | where the emulator lives [`../iris`] |
-| `IRIS_RELEASE_REPO` / `IRIS_TAG` | which iris releases to fetch, optional version pin [`danifunker/iris` @ `latest`] |
+| `IRIS_RELEASE_REPO` / `IRIS_TAG` | which iris releases to fetch, optional version pin [`techomancer/iris` @ `latest`] |
 | `RB_CLI` | rb-cli binary [PATH, else auto-downloaded] |
 
 ### Everyday commands

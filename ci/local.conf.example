@@ -72,10 +72,12 @@ IRIX65_IMAGE=/path/to/irix65-dev.chd
 #IRIS_DIR=../iris
 
 # Which iris releases fetch-iris.sh pulls, and an optional version pin
-# (default: danifunker/iris @ latest; don't pin before v2026-07-28-20-04 —
-# older tags lack iris-ci outside linux x64/arm64).
-#IRIS_RELEASE_REPO=danifunker/iris
-#IRIS_TAG=v2026-07-28-20-04
+# (default: techomancer/iris - the upstream emulator - @ latest). Upstream
+# tags are v<YYYY-MM-DD-HH-MM>; the flat one-build-per-platform CLI archives
+# the script expects exist from v2026-08-31-16-28 on. The old danifunker/iris
+# fork has no releases any more.
+#IRIS_RELEASE_REPO=techomancer/iris
+#IRIS_TAG=v2026-08-31-16-28
 
 # rb-cli binary to use (default: PATH, else ensure-rbcli.sh downloads one).
 #RB_CLI=/usr/local/bin/rb-cli

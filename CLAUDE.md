@@ -48,7 +48,7 @@ Upstream useful changes here are candidates to PR back to SonnyJim/bstoolbox.
 | `irix.c` | IRIX backend: `<sys/dsreq.h>` `DS_ENTER` ioctls, `mediad` start/stop. |
 | `linux.c` | Linux backend: `<scsi/sg.h>` `SG_IO` ioctls. |
 | `Makefile` | `uname`-based OS detection; sets `-DOS_IRIX` / `-DOS_LINUX`. |
-| `meson.build` | Linux build. **Currently out of date** — missing `version.c` and the generated headers, so it does not link; see `.github/workflows/build.yaml`. |
+| `meson.build` | Linux build via meson. **Unused and out of date** — missing `version.c` and the generated headers, so it does not link. CI builds Linux with `make` (`.github/workflows/build.yaml`); a candidate for removal. |
 | `scripts/mkversion.sh` | Stamps `version.h` from git. Runs on the *host*, never on IRIX. |
 | `scripts/sync-irix-drop.sh` | Assembles the IRIX/IRIS drop folder. The only supported way. |
 | `scripts/irix-native-build.sh` | Shipped into the drop as `build.sh`; builds natively inside IRIX. |
@@ -108,7 +108,7 @@ make           # detects OS via uname, builds ./irixscsitb
 make tar       # build + package binary/README into build/irixscsitb.tar.gz
 make test      # host-side smoke test against a mock SCSI bus (see below)
 make clean
-meson setup build && meson compile -C build   # Linux/CI only
+# Linux CI (.github/workflows/build.yaml) runs exactly: make, then make test
 
 # IRIX only - the Motif GUI, a second binary alongside the CLI
 make irix-gui-o32   # portable 5.3-6.5
@@ -253,15 +253,18 @@ than from each job's own clock.
 `.github/workflows/release.yml` builds BOTH flavors natively in IRIS — one
 matrixed `build-native` job, prebuilt emulator binaries via
 `scripts/fetch-iris.sh` (no Rust toolchain in CI) — then packages and cuts the
-release. Hosted mode needs the secrets **`IRIX53_DISK_URL`** and
+release. **It runs on every push to `main`** as a build-and-package check
+(artifacts only; a newer push cancels an older run) and publishes a release
+only on a `v*` tag push or a manual dispatch — the `release` job is gated on
+the event. `build.yaml` is the one-minute Linux `make` + `make test` check on
+the same pushes and on pull requests. Hosted mode needs the secrets **`IRIX53_DISK_URL`** and
 **`IRIX65_DISK_URL`** (installed boot disks, bare `.chd` or a `.zip` with one;
 licensed IRIX — host them privately); downloads are cached keyed on the URL
 hash. Self-hosted mode: dispatch with `runner_label` + `irix53_image` /
 `irix65_image` local paths and the images never leave the machine (works on
-Linux and macOS runners — but note the iris release tarballs currently bundle
-`iris-ci` on Linux only; a self-hosted Mac needs a source-built iris-ci, and
-`fetch-iris.sh` says exactly that). Optional: `IRIS_RELEASE_REPO` /
-`IRIS_TAG` vars (default `danifunker/iris` @ latest) and the `iris_tag`
+Linux and macOS runners: every upstream CLI archive bundles `iris-ci` on
+every target). Optional: `IRIS_RELEASE_REPO` / `IRIS_TAG` vars (default
+`techomancer/iris` @ latest — the upstream emulator) and the `iris_tag`
 dispatch input. The old `IRIX_TOOLCHAIN_IMAGE` cross-compile variable is gone.
 
 **`scripts/release-local.sh`** is the third mode: the whole pipeline on the
@@ -740,15 +743,43 @@ selects it on IRIX and it would not compile there.
   multi-KB/MB transfers took minutes and looked like a hang. Fixed in `irix.c`
   (single readiness check, no per-block sleep). Still needs end-to-end
   verification on the emulator/hardware.
-- **Prebuilt iris pinning: don't pin `IRIS_TAG` before v2026-07-28-20-04** —
-  older releases bundled `iris-ci` on linux x64/arm64 only (and used varying
-  archive layouts). From that release on, every `IRIS-cli-*` archive ships
-  `iris` + `iris-ci` flat on all targets (verified 2026-07-28, incl. a full
-  o32 build driven by the prebuilt macOS pair). `scripts/fetch-iris.sh`
-  extracts layout-tolerantly and fails with the exact workaround if an old
-  tag is pinned. Since v2026-08-13-11-14 the variants are per-emulated-CPU
-  (`r4400`/`r5000`, no more `lightning`); the script tries `r4400` first and
-  falls back to `lightning`, so tags on either side of the rename both work.
+- **Prebuilt iris comes from upstream, `techomancer/iris` (switched
+  2026-09-17).** The `danifunker/iris` fork publishes no releases any more —
+  its releases API answers 404 — so the old default failed outright at the
+  fetch step. Upstream tags are `v<YYYY-MM-DD-HH-MM>`; from
+  `v2026-08-31-16-28` (the first, and at the time of writing the only,
+  release) it ships **one CLI build per platform** with no variant token:
+  `IRIS-cli-<os>-<arch>-<ver>.tar.gz` (`.zip` on Windows), each holding `iris`
+  + `iris-ci` flat, with opcodefusion / rex-jit / lightning / tlbvmap / chd /
+  camera compiled in. The emulated CPU (R4400 vs R5000) became a runtime
+  setting, which is why the per-CPU `r4400`/`r5000` archives — and the
+  `lightning` ones before them — are gone. `scripts/fetch-iris.sh` matches
+  the plain name (tolerating a variant token for a repo that still publishes
+  the old shape), extracts layout-tolerantly, and has `--resolve-only` for
+  checking a tag or a foreign os/arch pair without downloading. Everything
+  `iris-build.sh` relies on is unchanged upstream: `--ci`, `--config`,
+  `--ci-socket`, `--scsi1/--scsi2`, `--serial-log`, the `iris-ci` ping /
+  serial / quit subcommands, and the TOML keys in `ci/iris-irix*.toml`
+  (upstream's own `iris-irix53.toml` uses the same ones) — and a full n32
+  build ran clean with the upstream pair the day of the switch. Upstream's release
+  also carries `Indy-IRIX53_dev.chd` / `Indy-IRIX65_dev.chd`, installed dev
+  disks — see the next bullet.
+- **Upstream's dev disks are viable CI images (inspected 2026-09-17).**
+  `Indy-IRIX53_dev.chd` (EFS, 2 GiB) and `Indy-IRIX65_dev.chd` (XFS, 4 GiB)
+  from the `techomancer/iris` release both carry `cc`, `make`, `ld`,
+  `/usr/sbin/gendist` + `inst`, `sys/dsreq.h` and Motif development: 5.3 has
+  121 `/usr/include/Xm` headers and `libXm.so.1`; 6.5 has
+  `/usr/include/Xm -> ../Motif-1.2/include/Xm` (the 1.2 pin this project
+  wants; a `Motif-2.1` tree sits beside it) and libXm in both `lib` and
+  `lib32`. Read them with `rb-cli ls <chd>@1 <dir>` — it handles XFS too.
+  **Proven end to end:** `iris-build.sh --flavor n32` against the 6.5 dev
+  disk, driven by the upstream prebuilt `iris` + `iris-ci` on a Mac, booted
+  multiuser, logged in as root with no password, built the CLI and the Motif
+  GUI, ran `gendist` and handed back `inst65/` — about three minutes,
+  2026-09-17. Using them would remove the need for the private `IRIX*_DISK_URL`
+  secrets, but they are licensed IRIX hosted by upstream, so that is a
+  policy call not made here: the secrets stay the default, and
+  `fetch-image.sh` is where a public-asset fallback would go.
 - **Wi-Fi is written from the firmware source and two host implementations, and
   has NOT yet been run against real hardware.** The protocol was taken from
   BlueSCSI's `lib/SCSI2SD/src/firmware/network.c` / `network.h` and
