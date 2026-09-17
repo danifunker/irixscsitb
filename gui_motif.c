@@ -429,7 +429,7 @@ static int open_selected(int readonly)
  */
 static int require_toolbox(void)
 {
-	char msg[TOOLBOX_IDENTITY_MAX + 320];
+	char msg[TOOLBOX_IDENTITY_MAX + TOOLBOX_HINT_MAX + 320];
 
 	if (sel_dev < 0) {
 		show_msg("No device", "Select a device in the SCSI bus list first.", 1);
@@ -438,12 +438,19 @@ static int require_toolbox(void)
 	if (scan[sel_dev].confirmed)
 		return 1;
 
-	if (scan[sel_dev].claims)
+	if (scan[sel_dev].claims) {
+		/* Claimed by firmware name but silent on 0xD9: almost always
+		 * the toolbox switched off in that firmware's ini, so the
+		 * core's hint is the useful part of this dialog. */
+		const char *hint = toolbox_enable_hint(scan[sel_dev].identity);
+
 		sprintf(msg, "'%s'\n\nadvertises the toolbox API but did not answer\n"
-			     "TOOLBOX_LIST_DEVICES (0xD9), so it does not actually\n"
-			     "implement it. Refusing to drive it as a toolbox target.",
-			scan[sel_dev].identity);
-	else
+			     "TOOLBOX_LIST_DEVICES (0xD9), so it cannot be driven as\n"
+			     "a toolbox target.%s%s",
+			scan[sel_dev].identity,
+			hint != NULL ? "\n\n" : "",
+			hint != NULL ? hint : "");
+	} else
 		sprintf(msg, "'%s'\n\ndoes not advertise the toolbox API.\n\n"
 			     "Known toolbox firmware: BlueSCSI, ZuluSCSI (toolbox must\n"
 			     "be enabled on the device). If you believe this one supports\n"
@@ -783,6 +790,7 @@ static void refresh_content(void)
 	char line[NAME_BUF_SIZE + 64];
 	char widest[NAME_BUF_SIZE + 64];
 	char fmt[48];
+	char size[SIZE_STR_MAX];
 	int dev, i, n, len, best = 0;
 	int w_name = 0;
 
@@ -829,13 +837,16 @@ static void refresh_content(void)
 		if (len > w_name)
 			w_name = len;
 	}
-	sprintf(fmt, "#%%-3d %%-%ds  %%ld bytes", w_name + 1);
+	/* The size is a 40-bit value rendered by the core, never a long:
+	 * a 4 GB CD image would otherwise show up negative on o32/n32. */
+	sprintf(fmt, "#%%-3d %%-%ds  %%s bytes", w_name + 1);
 
 	for (i = 0; i < n; i++) {
 		sprintf(line, fmt, entries[i].index, entries[i].name,
-			size_to_long(entries[i].size));
-		/* Directories get the same trailing marker the CLI uses. */
-		if (entries[i].type == 1)
+			size_to_str(entries[i].size, size));
+		/* Directories are marked, as the CLI marks them with a "/".
+		 * TOOLBOX_ENTRY_DIR is 0: the firmware writes 1 for a file. */
+		if (entries[i].type == TOOLBOX_ENTRY_DIR)
 			strcat(line, "  (dir)");
 		list_add(content_list_w, line);
 
@@ -858,9 +869,10 @@ static void refresh_content(void)
 static void do_interrogate(void)
 {
 	ToolboxDetect det;
-	char text[SCSI_PATH_MAX + TOOLBOX_IDENTITY_MAX + 768];
+	char text[SCSI_PATH_MAX + TOOLBOX_IDENTITY_MAX + TOOLBOX_HINT_MAX + 768];
 	char ver[64];
 	char claim[128];
+	const char *hint;
 	int dev, dbg, ret;
 
 	if (sel_dev < 0) {
@@ -924,6 +936,12 @@ static void do_interrogate(void)
 
 	if (dbg >= 0)
 		sprintf(text + strlen(text), "\nDebug mode: %s", dbg ? "on" : "off");
+
+	/* A firmware that claims by name and then stays silent is nearly
+	 * always one with the toolbox switched off in its ini; say so. */
+	hint = ret == TOOLBOX_ERR_NO_ANSWER ? toolbox_enable_hint(det.identity) : NULL;
+	if (hint != NULL)
+		sprintf(text + strlen(text), "\n\n%s", hint);
 
 	show_msg("Interrogate", text, 0);
 	set_status("Interrogated the selected device.");
@@ -1468,7 +1486,8 @@ static void device_select_cb(Widget w, XtPointer client, XtPointer call)
 	else if (scan[sel_dev].wifi)
 		sprintf(msg, "%s is the Wi-Fi device - use the Wi-Fi menu.", scan[sel_dev].path);
 	else if (scan[sel_dev].claims)
-		sprintf(msg, "%s claims the toolbox but failed 0xD9 - not usable.",
+		sprintf(msg, "%s claims the toolbox but failed 0xD9 - not usable "
+			     "(Device > Interrogate says why).",
 			scan[sel_dev].path);
 	else
 		sprintf(msg, "%s is not a toolbox device.", scan[sel_dev].path);
@@ -1633,8 +1652,9 @@ static void get_ok_cb(Widget w, XtPointer client, XtPointer call)
 	char outdir[1024];
 	char shown[256];
 	char text[NAME_BUF_SIZE + 384];
+	char size[SIZE_STR_MAX];
 	char *dir = NULL;
-	int dev, row;
+	int dev, row, ret;
 
 	row = list_selection(content_list_w);
 	if (row < 0 || row >= entries_n)
@@ -1654,14 +1674,23 @@ static void get_ok_cb(Widget w, XtPointer client, XtPointer call)
 	dev = open_selected(0);
 	if (dev < 0)
 		return;
-	if (toolbox_getfile(dev, entries[row].index, outdir) != 0) {
-		scsi_close(dev);
+	ret = toolbox_getfile(dev, entries[row].index, outdir);
+	scsi_close(dev);
+	if (ret == GETFILE_TOO_BIG) {
+		/* Refused before anything was written; the size comes from the
+		 * core's 40-bit renderer, never a long. */
+		sprintf(text, "%s is %s bytes.\n\nThis 32-bit build cannot write a file larger than\n"
+			      "2 GB (2147483647 bytes), so nothing was fetched.",
+			entries[row].name, size_to_str(entries[row].size, size));
+		show_msg("File too large", text, 1);
+		return;
+	}
+	if (ret != 0) {
 		show_msg("Get failed",
 			 "TOOLBOX_GET_FILE (0xD1) failed. Check the output directory\n"
 			 "exists and is writable.", 1);
 		return;
 	}
-	scsi_close(dev);
 
 	copy_clamped(shown, (int)sizeof(shown), outdir);
 	sprintf(text, "Fetched:\n\n    %s\n\ninto %s", entries[row].name, shown);

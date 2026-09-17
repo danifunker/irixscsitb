@@ -36,16 +36,81 @@ int device_list[8];
 int verbose;
 int force_toolbox;
 
-/*Helper function to convert 40bit size into a long */
-long int size_to_long(const unsigned char size[5])
+/*
+ * ToolboxFileEntry.size is a 40-bit big-endian byte count, and a DVD-sized CD
+ * image needs all 40 of them. On the o32/n32 ABIs long is 32 bits, so folding
+ * the bytes into one was a truncation - a 4.13 GB image listed as -162529280
+ * bytes on an O2 - and the obvious escape, long long with %lld, is exactly
+ * what the 5.3 libc cannot be trusted with (and there is no snprintf there
+ * either). So the value is never held in a single integer:
+ *
+ *   size_to_str()    renders it in decimal straight from the five bytes by
+ *                    repeated short division - 13 digits at most;
+ *   size_to_blocks() splits it into whole MAX_DATA_LEN blocks plus the bytes
+ *                    in the final partial block, which is all the transfer
+ *                    loop needs and fits easily (2^40 / 4096 = 2^28 blocks).
+ */
+char *size_to_str(const unsigned char size[5], char *out)
 {
+	unsigned char v[5];
+	char digits[SIZE_STR_MAX];
+	int n = 0;
 	int i;
-	long int result = 0;
-	for (i = 0; i < 5; i++)
-	{
-		result = (result << 8) | size[i];
-	}
-	return result;
+
+	memcpy(v, size, sizeof(v));
+	do {
+		unsigned int rem = 0;
+
+		for (i = 0; i < 5; i++) {
+			unsigned int cur = (rem << 8) | v[i];
+
+			v[i] = (unsigned char)(cur / 10);
+			rem = cur % 10;
+		}
+		digits[n++] = (char)('0' + rem);
+	} while ((v[0] | v[1] | v[2] | v[3] | v[4]) != 0 && n < SIZE_STR_MAX - 1);
+
+	for (i = 0; i < n; i++)
+		out[i] = digits[n - 1 - i];
+	out[n] = '\0';
+	return out;
+}
+
+#if MAX_DATA_LEN != 4096
+#error size_to_blocks() shifts by 12 because MAX_DATA_LEN is 4096
+#endif
+
+/*
+ * Can this build write a file past 2 GB? Only with a 64-bit off_t: the o32
+ * and n32 IRIX ABIs have a 32-bit one, so fwrite() fails with EFBIG at byte
+ * 2^31. A file of BLOCKS_32BIT_LIMIT or more full blocks is therefore refused
+ * before the transfer starts (2^31-1 bytes is 524287 full blocks plus a
+ * tail; 524288 is one byte too many). Decided over adding fopen64: a plain
+ * up-front message is what the operator needs, and 5.3 has no fopen64 at all.
+ * `make test` defines TOOLBOX_TEST_32BIT_OFFSETS so the refusal is exercised
+ * on a 64-bit development host.
+ */
+#define BLOCKS_32BIT_LIMIT ((0x7FFFFFFFUL / MAX_DATA_LEN) + 1)
+
+static int build_writes_large_files(void)
+{
+#ifdef TOOLBOX_TEST_32BIT_OFFSETS
+	return 0;
+#else
+	return sizeof(off_t) >= 8;
+#endif
+}
+
+void size_to_blocks(const unsigned char size[5], unsigned long *blocks, unsigned int *tail)
+{
+	unsigned long hi = size[0];                                   /* bits 32-39 */
+	unsigned long lo = ((unsigned long)size[1] << 24) |           /* bits 0-31 */
+			   ((unsigned long)size[2] << 16) |
+			   ((unsigned long)size[3] << 8) |
+			   (unsigned long)size[4];
+
+	*blocks = (hi << 20) | (lo >> 12);
+	*tail = (unsigned int)(lo & (MAX_DATA_LEN - 1));
 }
 
 /* Human-readable name for a device-type byte from the 0xD9 map. Masked to a
@@ -464,17 +529,17 @@ int toolbox_getfile(int dev, int idx, char *outdir)
 	ToolboxFileEntry files[MAX_FILES];
 	FILE *fd;
 	char *filename;
-	size_t bytes_written;
-	size_t bytes_left;
-	long int filesize;
-	long int max_blocks;
+	char sizestr[SIZE_STR_MAX];
+	unsigned long full_blocks;   /* whole MAX_DATA_LEN blocks in the file */
+	unsigned int tail;           /* bytes in the final partial block, if any */
+	unsigned long total_blocks;
+	unsigned long blk;
 	int n_files;
-	int blk_idx = 0;
 
 	memset(cmd, 0, sizeof(cmd));
 	cmd[0] = TOOLBOX_GET_FILE;
 	cmd[1] = idx;
-	cmd[2] = 0; /*Index offset in MAX_DATA_LEN blocks */
+	/* cmd[2..5]: offset in MAX_DATA_LEN blocks, big-endian; set per block */
 
 	if (strlen (outdir) < 2)/*Default to current directory */
 		strcpy (outdir, "./");
@@ -492,7 +557,24 @@ int toolbox_getfile(int dev, int idx, char *outdir)
 	}
 
 	if (verbose)
-		fprintf (stdout, "getfile :#%i %s %li bytes\n", files[idx].index, files[idx].name, size_to_long(files[idx].size));
+		fprintf (stdout, "getfile :#%i %s %s bytes\n", files[idx].index, files[idx].name,
+			 size_to_str(files[idx].size, sizestr));
+
+	/*
+	 * Know the shape of the transfer before touching the output directory,
+	 * so a file this build cannot store is refused up front - not two
+	 * gigabytes in, with a truncated file left behind.
+	 */
+	size_to_blocks(files[idx].size, &full_blocks, &tail);
+	total_blocks = full_blocks + (tail > 0 ? 1 : 0);
+	if (!build_writes_large_files() && full_blocks >= BLOCKS_32BIT_LIMIT)
+	{
+		fprintf (stderr, "Error: %s is %s bytes, but this 32-bit build cannot write a file\n"
+				 "larger than 2 GB (2147483647 bytes). Nothing was fetched.\n",
+			 files[idx].name, size_to_str(files[idx].size, sizestr));
+		return GETFILE_TOO_BIG;
+	}
+
 	filename = malloc (strlen(outdir) + strlen(files[idx].name) + 1);
 	if (filename == NULL)
 	{
@@ -513,60 +595,56 @@ int toolbox_getfile(int dev, int idx, char *outdir)
 		return -1;
 	}
 	memset(buf, 0, sizeof(buf));
-	bytes_written = 0;
-	bytes_left = 0;
 
-	/* Bound the loop so a wrong/garbage size can't spin forever: a file of
-	 * filesize bytes needs at most ceil(filesize / MAX_DATA_LEN) blocks; allow
-	 * one extra as slack. */
-	filesize = size_to_long (files[idx].size);
-	max_blocks = (filesize / MAX_DATA_LEN) + 2;
-
-	/*Read the data from the SCSI bus and store to disk */
-	while (1)
+	/*
+	 * Walk the file in MAX_DATA_LEN blocks. The count comes straight from
+	 * the 40-bit size, so a file over 2 GB - or over 4 GB - is simply more
+	 * blocks; nothing here holds the byte count in a long. Every request
+	 * asks for a full block (the firmware serves whatever window it is
+	 * asked for) and only the last one is written short. A file that is an
+	 * exact multiple of the block size gets no extra read past its end -
+	 * the old byte-counting loop issued one, which the mock bus now treats
+	 * as fatal.
+	 */
+	for (blk = 0; blk < total_blocks; blk++)
 	{
-		if ((long int)blk_idx > max_blocks)
-		{
-			fprintf (stderr, "Error: getfile transfer exceeded expected size (%ld bytes), aborting\n", filesize);
-			fclose (fd);
-			free (filename);
-			return -1;
-		}
+		unsigned int want = (blk < full_blocks) ? MAX_DATA_LEN : tail;
+
+		cmd[2] = (unsigned char)((blk >> 24) & 0xFF);
+		cmd[3] = (unsigned char)((blk >> 16) & 0xFF);
+		cmd[4] = (unsigned char)((blk >>  8) & 0xFF);
+		cmd[5] = (unsigned char)( blk        & 0xFF);
+
 		if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, MAX_DATA_LEN) != 0)
 		{
-			fprintf (stderr, "Error: getfile failed during transfer - %s\n", strerror(errno));
+			fprintf (stderr, "Error: getfile failed at block %lu of %lu - %s\n",
+				 blk, total_blocks, strerror(errno));
 			fclose (fd);
 			free (filename);
 			return -1;
 		}
-
-		bytes_left = filesize - bytes_written;
-		if (verbose)
-			fprintf (stdout, "Bytes left: %li\n", (long int)bytes_left);
-		if (bytes_left <= 0)
+		/* A 32-bit build without large-file support stops here at 2 GB
+		 * (EFBIG): say so rather than report a short file as fetched. */
+		if (fwrite (buf, 1, want, fd) != want)
 		{
-			if (verbose)
-				fprintf (stdout, "Transfer of %s complete\n", filename);
-			break;
+			fprintf (stderr, "Error: getfile could not write %s at block %lu of %lu - %s\n",
+				 filename, blk, total_blocks, strerror(errno));
+			fclose (fd);
+			free (filename);
+			return -1;
 		}
-
-		/*Check to see if we are on the last chunk */
-		if (bytes_left < MAX_DATA_LEN)
-		{
-			bytes_written += fwrite (buf, sizeof(unsigned char), bytes_left, fd);
-			break;
-		}
-		/*Otherwise write the chunk and move onto the next one */
-		bytes_written += fwrite (buf, sizeof(unsigned char), MAX_DATA_LEN, fd);
-
-		/*increment the offset */
-		blk_idx++;
-		cmd[2] = (unsigned char)(blk_idx >> 24) & 0xFF;
-		cmd[3] = (unsigned char)(blk_idx >> 16) & 0xFF;
-		cmd[4] = (unsigned char)(blk_idx >>  8) & 0xFF;
-		cmd[5] = (unsigned char)(blk_idx      ) & 0xFF;
+		if (verbose && ((blk + 1) % 256 == 0 || blk + 1 == total_blocks))
+			fprintf (stdout, "  block %lu of %lu\n", blk + 1, total_blocks);
 	}
-	fclose (fd);
+
+	if (fclose (fd) != 0)
+	{
+		fprintf (stderr, "Error: getfile could not finish writing %s - %s\n", filename, strerror(errno));
+		free (filename);
+		return -1;
+	}
+	if (verbose)
+		fprintf (stdout, "Transfer of %s complete\n", filename);
 	free (filename);
 	return 0;
 }
@@ -636,7 +714,17 @@ int toolbox_listdevices(int dev, unsigned char map[8])
  * never enough here either - toolbox_confirm() below has to get a real answer
  * out of the device before we treat it as toolbox-capable.
  */
-static const char *toolbox_firmware_ids[] = { "BlueSCSI", "ZuluSCSI" };
+static const struct toolbox_firmware {
+	const char *name;
+	const char *enable_hint;   /* what to do when it claims but stays silent */
+} toolbox_firmware_ids[] = {
+	{ "BlueSCSI",
+	  "BlueSCSI enables the toolbox by default. Check bluescsi.ini does not\n"
+	  "set 'EnableToolbox = 0' under [SCSI], and that the firmware is current." },
+	{ "ZuluSCSI",
+	  "ZuluSCSI ships with the toolbox DISABLED. Add 'EnableToolbox = 1' under\n"
+	  "[SCSI] in zuluscsi.ini on the SD card, then power-cycle the ZuluSCSI." }
+};
 #define N_ACCEPT_IDS (int)(sizeof(toolbox_firmware_ids) / sizeof(toolbox_firmware_ids[0]))
 
 /* Substring search that tolerates embedded NULs (MODE SENSE data and the
@@ -684,7 +772,7 @@ static int toolbox_modesense_page31(int dev, int probe)
 		return -1;              /* page unsupported or command failed */
 
 	for (i = 0; i < N_ACCEPT_IDS; i++)
-		if (buf_contains(buf, sizeof(buf), toolbox_firmware_ids[i]))
+		if (buf_contains(buf, sizeof(buf), toolbox_firmware_ids[i].name))
 			return 0;
 	return -1;
 }
@@ -774,8 +862,35 @@ static const char *identity_accepted(const char *identity)
 	int i;
 
 	for (i = 0; i < N_ACCEPT_IDS; i++)
-		if (strstr(identity, toolbox_firmware_ids[i]) != NULL)
-			return toolbox_firmware_ids[i];
+		if (strstr(identity, toolbox_firmware_ids[i].name) != NULL)
+			return toolbox_firmware_ids[i].name;
+	return NULL;
+}
+
+/*
+ * Advice for a device that CLAIMED the toolbox by firmware name but never
+ * answered 0xD9. The two firmwares behave differently here, and the difference
+ * is exactly what the operator needs to hear: ZuluSCSI stamps its name into
+ * INQUIRY unconditionally but only dispatches 0xD0-0xDA when zuluscsi.ini says
+ * "EnableToolbox = 1" under [SCSI] - and its default is 0 ("disabled for
+ * compatibility reasons") - so a stock ZuluSCSI always fails stage 2 with an
+ * ILLEGAL REQUEST / INVALID COMMAND OPERATION CODE. BlueSCSI reads the same
+ * key with a default of 1. Both facts come from the firmwares' own
+ * scsiToolboxEnabled(); the INQUIRY tail is appended in lib/SCSI2SD inquiry.c
+ * regardless of that setting.
+ *
+ * Returns the hint (may contain '\n'; every line fits in 80 columns, and the
+ * whole string is shorter than TOOLBOX_HINT_MAX), or NULL when the claim did
+ * not come from a firmware we know - page 0x31 or -F - and there is nothing
+ * firmware-specific to say.
+ */
+const char *toolbox_enable_hint(const char *identity)
+{
+	int i;
+
+	for (i = 0; i < N_ACCEPT_IDS; i++)
+		if (strstr(identity, toolbox_firmware_ids[i].name) != NULL)
+			return toolbox_firmware_ids[i].enable_hint;
 	return NULL;
 }
 

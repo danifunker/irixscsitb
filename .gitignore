@@ -69,8 +69,10 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-# Host-side mock test binary
+# Host-side mock test binary and its scratch output
 tests/irixscsitb-mock
+tests/mock-*.out
+tests/mock-out/
 
 # macOS Finder droppings
 .DS_Store

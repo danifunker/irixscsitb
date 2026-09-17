@@ -136,6 +136,13 @@ matters in practice: the IRIS emulator presents itself as `SGI / IRIS EMUL DISK`
 but implements none of `0xD0`–`0xDA`, so it is correctly ignored rather than
 accepted and then failing on every operation.
 
+**ZuluSCSI ships with the toolbox switched off.** Its INQUIRY carries the
+`ZuluSCSI` name regardless, so a stock board passes the claim and then fails
+`0xD9` — the tool reports `claims the toolbox but failed 0xD9` and tells you
+the fix: put `EnableToolbox = 1` under `[SCSI]` in `zuluscsi.ini` on the SD
+card and power-cycle the board (the setting is read once at boot). BlueSCSI
+has the same key with a default of `1`, so it works out of the box.
+
 Any firmware that implements the toolbox is picked up automatically — **no code
 change needed**. If a device implements the commands but advertises neither
 signal, `-F` skips the claim check and tests it with a real toolbox command.
@@ -259,7 +266,9 @@ so you can leave the device path off for Wi-Fi.
 ```
 
 A device that advertises the toolbox but fails the `0xD9` confirmation is shown
-as `[claims toolbox, no 0xD9 answer]` rather than being silently trusted.
+as `[claims toolbox, no 0xD9 answer]` rather than being silently trusted — and
+when that device is a ZuluSCSI, the scan adds the `EnableToolbox = 1` advice
+from **Firmware detection** above, because that is nearly always the cause.
 
 Note the two markers land on **different rows**, and always will: the firmware
 answers the toolbox commands on the disk it is emulating and the Wi-Fi commands

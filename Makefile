@@ -141,12 +141,22 @@ tar: default
 # machine with no IRIX or Linux SCSI headers (e.g. macOS). Uses the host cc and
 # the host's own C compiler defaults; nothing here ships in a release.
 # Expected: BlueSCSI + ZuluSCSI marked [TOOLBOX], IRIS EMUL DISK NOT marked,
-# and the page-0x31 liar reported as "claims toolbox, no 0xD9 answer".
+# the page-0x31 liar and the toolbox-disabled ZuluSCSI both reported as
+# "claims toolbox, no 0xD9 answer", and the latter making both -b and -i print
+# the zuluscsi.ini EnableToolbox advice (a stock ZuluSCSI ships with it off).
+# Then the listing/transfer contract: a 4,433,547,264-byte CD image must print
+# in full (the 40-bit size never passes through a 32-bit long), CD images carry
+# no "/" (entry byte 1 is 1 for a FILE), a real /shared directory does, a fetch
+# writes exactly the advertised bytes without reading past the end, a 2 GiB
+# file is refused before any transfer (TOOLBOX_TEST_32BIT_OFFSETS makes the
+# core behave like an o32/n32 build for that one check), and a CD switch
+# refused because the volume is busy exits non-zero (-f goes through, a non-CD
+# target is refused too).
 # -D_POSIX_C_SOURCE: strict -std=c89 makes glibc hide POSIX declarations
 # (getopt/optarg/optind), which only shows up on Linux CI - macOS exposes them
 # regardless. Affects this host-side build only; MIPSpro cc ignores the issue.
 test: version.h buildhost.h
-	$(CC) -std=c89 -Wall -D_POSIX_C_SOURCE=200112L -DOS_IRIX -I. -o tests/irixscsitb-mock irixscsitb.c toolbox.c wifi.c version.c tests/mock_os.c
+	$(CC) -std=c89 -Wall -D_POSIX_C_SOURCE=200112L -DOS_IRIX -DTOOLBOX_TEST_32BIT_OFFSETS -I. -o tests/irixscsitb-mock irixscsitb.c toolbox.c wifi.c version.c tests/mock_os.c
 	@echo "*** mock bus scan:"
 	@./tests/irixscsitb-mock -b
 	@echo ""
@@ -161,6 +171,53 @@ test: version.h buildhost.h
 	@echo ""
 	@echo "*** mock -F Wi-Fi status against the radio itself (floor must not block it):"
 	@./tests/irixscsitb-mock -F -W /dev/mock/sc0d7l0
+	@echo ""
+	@echo "*** mock -b must tell a toolbox-disabled ZuluSCSI how to enable it:"
+	@./tests/irixscsitb-mock -b | grep "EnableToolbox = 1"
+	@echo ""
+	@echo "*** mock -i against a ZuluSCSI with EnableToolbox = 0 (must refuse, and say why):"
+	@if ./tests/irixscsitb-mock -i /dev/mock/sc0d9l0 > tests/mock-d9.out 2>&1; then \
+		cat tests/mock-d9.out; rm -f tests/mock-d9.out; \
+		echo "FAIL: a toolbox-disabled ZuluSCSI was accepted"; exit 1; fi
+	@cat tests/mock-d9.out
+	@grep -q "EnableToolbox = 1" tests/mock-d9.out || { rm -f tests/mock-d9.out; \
+		echo "FAIL: no EnableToolbox advice for a silent ZuluSCSI"; exit 1; }
+	@rm -f tests/mock-d9.out
+	@echo ""
+	@echo "*** mock -l: a 40-bit size prints in full, and CD images carry no '/':"
+	@./tests/irixscsitb-mock -l /dev/mock/sc0d5l0 > tests/mock-l.out; cat tests/mock-l.out
+	@grep -q "^#1 irix-6-5-22-full.iso 4433547264 bytes" tests/mock-l.out || \
+		{ rm -f tests/mock-l.out; echo "FAIL: 40-bit size not printed in full"; exit 1; }
+	@if grep -q "iso/" tests/mock-l.out; then rm -f tests/mock-l.out; \
+		echo "FAIL: a CD image was marked as a directory"; exit 1; fi
+	@rm -f tests/mock-l.out
+	@echo ""
+	@echo "*** mock -s: a real directory is still marked:"
+	@./tests/irixscsitb-mock -s /dev/mock/sc0d3l0 | grep "^#2 games/ 0 bytes"
+	@echo ""
+	@echo "*** mock -g: one full block plus a 904-byte tail, then an exact multiple - no read past the end:"
+	@rm -rf tests/mock-out && mkdir -p tests/mock-out
+	@./tests/irixscsitb-mock -g 1 -o tests/mock-out/ /dev/mock/sc0d3l0
+	@test "$$(wc -c < tests/mock-out/notes.txt | tr -d ' ')" -eq 5000 || { echo "FAIL: fetched size"; exit 1; }
+	@test "$$(od -An -tx1 -j 4095 -N 2 tests/mock-out/notes.txt | tr -d ' ')" = "ff00" || { echo "FAIL: block boundary"; exit 1; }
+	@test "$$(od -An -tx1 -j 4999 -N 1 tests/mock-out/notes.txt | tr -d ' ')" = "87" || { echo "FAIL: last byte"; exit 1; }
+	@./tests/irixscsitb-mock -g 0 -o tests/mock-out/ /dev/mock/sc0d3l0
+	@test "$$(wc -c < tests/mock-out/Doom.iso | tr -d ' ')" -eq 4096 || { echo "FAIL: exact-multiple size"; exit 1; }
+	@echo "*** mock -g of a 2 GiB file: a 32-bit build must refuse up front, writing nothing:"
+	@if ./tests/irixscsitb-mock -g 3 -o tests/mock-out/ /dev/mock/sc0d3l0 > tests/mock-g.out 2>&1; then \
+		cat tests/mock-g.out; echo "FAIL: a file too large for a 32-bit build exited 0"; exit 1; fi
+	@cat tests/mock-g.out
+	@grep -q "cannot write a file" tests/mock-g.out || { echo "FAIL: no size-limit message"; exit 1; }
+	@test ! -e tests/mock-out/big.img || { echo "FAIL: an output file was created"; exit 1; }
+	@rm -f tests/mock-g.out
+	@rm -rf tests/mock-out
+	@echo ""
+	@echo "*** mock -c: a switch refused because the volume is busy must exit non-zero:"
+	@if ./tests/irixscsitb-mock -c 1 /dev/mock/sc0d5l0; then echo "FAIL: refusal exited 0"; exit 1; fi
+	@echo "*** mock -f -c: the forced switch must go through:"
+	@./tests/irixscsitb-mock -f -c 1 /dev/mock/sc0d5l0
+	@echo "*** mock -c against a non-CD target must exit non-zero:"
+	@if ./tests/irixscsitb-mock -c 1 /dev/mock/sc0d3l0; then echo "FAIL: not-a-CD exited 0"; exit 1; fi
 
 # Syntax-check the IRIX-only sources against a REAL IRIX header tree, without
 # needing an IRIX machine. gui_motif.c and irix.c cannot be COMPILED on the dev

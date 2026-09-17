@@ -121,16 +121,27 @@ make gui-syntax IRIX_INCLUDE=/path/to/irix/usr/include
 **`make test` is how you verify changes without hardware.** The dev machine is
 macOS with no IRIX/Linux SCSI headers, so `irix.c`/`linux.c` cannot be compiled
 here — but `toolbox.c` + `irixscsitb.c` (all the protocol, detection and CLI
-logic) *can*, by linking them against `tests/mock_os.c`, a fake 9-device SCSI bus
+logic) *can*, by linking them against `tests/mock_os.c`, a fake 10-device SCSI bus
 implementing the `os.h` contract. It covers a plain disk, an IRIS EMUL DISK, a CD-ROM, a real
 BlueSCSI, a real ZuluSCSI, a dead node, a "liar" that serves page 0x31 but
 never implements `0xD9`, an emulated DaynaPort that answers the `0x1C` Wi-Fi
-commands, and a *genuine* Dayna SCSI/Link with the byte-identical INQUIRY
-identity and no radio. Expected: only BlueSCSI and ZuluSCSI are `[TOOLBOX]`;
-IRIS is not; the liar reads `claims toolbox, no 0xD9 answer`; only the emulated
+commands, a *genuine* Dayna SCSI/Link with the byte-identical INQUIRY
+identity and no radio, and a ZuluSCSI with the toolbox disabled (INQUIRY
+identical to the real one, refuses `0xD9`). Expected: only BlueSCSI and the
+enabled ZuluSCSI are `[TOOLBOX]`; IRIS is not; the liar and the disabled
+ZuluSCSI read `claims toolbox, no 0xD9 answer`, and the latter makes `-b` and
+`-i` print the `EnableToolbox = 1` advice (asserted); only the emulated
 DaynaPort is `[WIFI]`. The test then runs `-W` and `-w` against the mock, which
 exercises the whole Wi-Fi path — including the six-byte CDB (the mock rejects a
-ten-byte one) and the signed-RSSI decode. **Run it after any
+ten-byte one) and the signed-RSSI decode — and then the listing/transfer
+contract: `-l` on the ZuluSCSI (its own ID is a CD in the mock's `0xD9` map)
+must print a 4,433,547,264-byte image in full with no trailing `/`, `-s` must
+mark the one real directory, `-g` must write exactly the advertised bytes
+(one full block plus a 904-byte tail, then an exact 4096-byte multiple) with
+no read past the end and must refuse a 2 GiB file up front, and `-c` on that
+target - whose `/CDROM` the mock
+reports as mounted and busy - must exit non-zero, succeed under `-f`, and
+exit non-zero against a non-CD target. **Run it after any
 change to detection or the command builders** — it catches regressions that a
 syntax check cannot. Add a device to `mock_paths[]`/`mock_command()` to cover
 new firmware.
@@ -393,6 +404,20 @@ implements. This is why the old `"IRIS EMUL DISK"` entry was removed (see above)
 `-F` (`force_toolbox`) skips stage 1 and goes straight to stage 2, for firmware
 we don't yet know by name. Because of this, a new toolbox-capable firmware needs
 **no code change** to be usable, and none at all if it advertises either signal.
+
+**A claim that fails stage 2 is usually a switched-off toolbox, not a broken
+one.** Both firmwares append their name to INQUIRY unconditionally
+(`lib/SCSI2SD/src/firmware/inquiry.c`) but only dispatch `0xD0`–`0xDA` when
+`scsiToolboxEnabled()` says so, which reads `EnableToolbox` under `[SCSI]` in
+the board's ini — **default `0` on ZuluSCSI** ("disabled for compatibility
+reasons"), default `1` on BlueSCSI. A stock ZuluSCSI therefore answers `0xD9`
+with ILLEGAL REQUEST / INVALID COMMAND OPERATION CODE and lands as
+`claims toolbox, no 0xD9 answer`. `toolbox_enable_hint()` returns the
+firmware-specific fix for that identity (each entry of `toolbox_firmware_ids[]`
+carries one; hints stay under `TOOLBOX_HINT_MAX` because the GUI formats them
+with `sprintf`), and the CLI rejection message, the `-b` summary, and the GUI's
+gate dialog and Interrogate report all print it. This was first hit on an O2
+with a fresh ZuluSCSI (2026-09-16).
 
 A soft Toolbox API-version check (`buf[buf[4]+4]`) only warns.
 
@@ -742,6 +767,34 @@ selects it on IRIX and it would not compile there.
   is what needs the driver.
 - **32-char filename limit** on `/shared` listings: structural to the protocol
   (`ToolboxFileEntry.name` is 32 bytes); not a bug.
+- **File sizes are 40-bit; never hold one in a `long` (fixed 2026-09-17).**
+  An O2 (6.5, n32) with a ZuluSCSI 2.3W listed a 4.13 GB image as
+  `-162529280 bytes`: the old `size_to_long()` folded the five bytes into a
+  32-bit `long`, and `%li` printed the wreck. `long long`/`%lld` is not the
+  fix (shaky on the 5.3 libc, see above). `size_to_str()` now renders the
+  decimal straight from the bytes and `size_to_blocks()` gives
+  `toolbox_getfile()` a block count plus tail, so the fetch loop is
+  size-agnostic and issues no read past the end (the mock's GET_FILE aborts
+  on one). A 32-bit build still cannot *write* past 2 GB (32-bit `off_t`,
+  EFBIG at byte 2^31), so `toolbox_getfile()` refuses such a file **before
+  the transfer starts** with `GETFILE_TOO_BIG` - a message on the CLI, a
+  "File too large" dialog in the GUI - rather than failing two gigabytes
+  in with a truncated file behind it. Decided 2026-09-17 in favour of a
+  plain message over adding `fopen64` (5.3 has none anyway). `make test`
+  compiles the core with `-DTOOLBOX_TEST_32BIT_OFFSETS` so the refusal is
+  exercised on a 64-bit host, against a 2 GiB `/shared` entry.
+- **Entry byte 1 is 1 = file, 0 = directory (fixed 2026-09-17).** The
+  firmware writes `isDirectory() ? 0x00 : 0x01`, the opposite of what the old
+  header comment (inherited from bstoolbox and escsitoolbox's `toolbox.h`)
+  said, so CD images printed as `name.iso/`. Compare against
+  `TOOLBOX_ENTRY_DIR`/`TOOLBOX_ENTRY_FILE`; LIST_CDS never returns a
+  directory at all.
+- **Every failed operation exits non-zero (fixed 2026-09-17).** `do_drive()`
+  used to be `void`, so a `-c` refused because `/CDROM` was busy - or any
+  failed list/get/put/debug call - still exited 0. It now returns the exit
+  status, and returns rather than `exit()`s on open/gate failure so `main()`
+  still restarts mediad after a failed `-c`. `make test` asserts the refusal,
+  the `-f` override and the not-a-CD case.
 - **Firmware `SEND_FILE_10` offset semantics:** the documented spec says
   `CDB[3..5]` is the *block number*; firmware `v2026.04.27` seeks with
   `seekCur(offset*512)` (relative), which corrupts multi-block writes. The host

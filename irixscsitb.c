@@ -38,15 +38,22 @@ static int running_as_root(void)
 	return geteuid() == 0;
 }
 
-/* Print one ToolboxFileEntry array as "#N name size" lines. */
-static void print_entries(const ToolboxFileEntry *entries, int n, int mark_dirs)
+/*
+ * Print one ToolboxFileEntry array as "#N name size" lines. A directory gets a
+ * trailing "/" so it is obvious it cannot be fetched; the test is against
+ * TOOLBOX_ENTRY_DIR (0), see irixscsitb.h for why that is the directory
+ * value. The size is rendered by the core, never through a long: it is 40
+ * bits wide and a CD image can use all of them.
+ */
+static void print_entries(const ToolboxFileEntry *entries, int n)
 {
+	char size[SIZE_STR_MAX];
 	int i;
 
 	for (i = 0; i < n; i++)
-		fprintf (stdout, "#%i %s%s %li bytes\n", entries[i].index, entries[i].name,
-			 (mark_dirs && entries[i].type == 1) ? "/" : "",
-			 size_to_long(entries[i].size));
+		fprintf (stdout, "#%i %s%s %s bytes\n", entries[i].index, entries[i].name,
+			 entries[i].type == TOOLBOX_ENTRY_DIR ? "/" : "",
+			 size_to_str(entries[i].size, size));
 }
 
 /* -s: list the device's /shared directory. */
@@ -57,7 +64,7 @@ static int cli_listfiles(int dev)
 
 	if (n < 0)
 		return -1;
-	print_entries(entries, n, 0);
+	print_entries(entries, n);
 	return 0;
 }
 
@@ -70,7 +77,7 @@ static int cli_listcds(int dev)
 	if (n < 0)
 		return -1;
 	fprintf (stdout, "Found %i CDs\n", n);
-	print_entries(entries, n, 1);
+	print_entries(entries, n);
 	return 0;
 }
 
@@ -315,11 +322,15 @@ static void cli_report_rejection(int ret, const ToolboxDetect *det)
 	}
 	else if (ret == TOOLBOX_ERR_NO_ANSWER)
 	{
+		const char *hint = toolbox_enable_hint(det->identity);
+
 		fprintf(stderr, "Error: '%s' did not answer TOOLBOX_LIST_DEVICES (0xD9).\n", det->identity);
 		if (force_toolbox)
 			fprintf(stderr, "Tested directly because of -F; this device does not implement the toolbox.\n");
 		else
-			fprintf(stderr, "It advertises the toolbox but does not implement it - refusing to continue.\n");
+			fprintf(stderr, "It advertises the toolbox but did not answer it - refusing to continue.\n");
+		if (hint != NULL)
+			fprintf(stderr, "%s\n", hint);
 	}
 }
 
@@ -414,6 +425,7 @@ static int cli_scanbus(void)
 	int found = 0;
 	int unconfirmed = 0;
 	int wifi = 0;
+	const char *hint = NULL;    /* advice for the first claimed-but-silent row */
 
 	count = scsi_enum_devices(paths, MAX_SCAN_DEVICES);
 	if (count < 0)
@@ -443,8 +455,11 @@ static int cli_scanbus(void)
 		answered++;
 		if (e.confirmed)
 			found++;
-		else if (e.claims)
+		else if (e.claims) {
 			unconfirmed++;
+			if (hint == NULL)
+				hint = toolbox_enable_hint(e.identity);
+		}
 		if (e.wifi)
 			wifi++;
 
@@ -461,7 +476,12 @@ static int cli_scanbus(void)
 
 	if (found > 0)
 		fprintf (stdout, "Pass one of the [TOOLBOX] paths to the other options, e.g. -i <device>\n");
-	else if (answered > 0 && !force_toolbox)
+	/* A row that claimed by firmware name and then stayed silent almost
+	 * always means the toolbox is switched off in that firmware's ini, so
+	 * say how to switch it on rather than the generic advice. */
+	if (hint != NULL)
+		fprintf (stdout, "%s\n", hint);
+	else if (found == 0 && answered > 0 && !force_toolbox)
 		fprintf (stdout, "No toolbox target found. Check toolbox mode is enabled on the device,\n"
 				 "or re-scan with -F to test every device by issuing 0xD9 directly.\n");
 	if (wifi > 0)
@@ -470,11 +490,20 @@ static int cli_scanbus(void)
 	return found;
 }
 
-static void do_drive(char *path, int list, int verbose, int cd_img, int file, char *outdir, int force)
+/*
+ * Open the target, gate it, run the one requested operation and report how it
+ * went as the process exit status: 0 only when the operation actually
+ * happened. Every failure - including a CD switch refused because the volume
+ * is still mounted - returns non-zero so a script can tell. Returning rather
+ * than exiting also matters for -c: main() stopped mediad before calling here
+ * and restarts it afterwards, which an exit() would skip.
+ */
+static int do_drive(char *path, int list, int verbose, int cd_img, int file, char *outdir, int force)
 {
 	int dev;
 	int dev_scsi_id; /* SCSI ID pulled from path */
 	int readonly; /* Needed to determine if it's a CDROM and only able to be opened READONLY */
+	int rc = 0;   /* the exit status */
 	readonly = 0;
 
 	/* CD targets are emulated read-only, so list-CDs and change-CD must open
@@ -496,7 +525,7 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 			/* Only suggest root if that is plausibly the problem. */
 			if (!running_as_root())
 				fprintf(stderr, "You are not root - that is almost certainly why. Re-run as root.\n");
-			exit(1);
+			return 1;
 		}
 	}
 
@@ -505,7 +534,7 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 	{
 		fprintf (stderr, "No usable toolbox device at %s\n", path);
 		scsi_close (dev);
-		exit(1);
+		return 1;
 	}
 
 	/* Only the CD operations (-l / -c) need the SCSI target id parsed out of the
@@ -520,40 +549,49 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 		{
 			fprintf (stderr, "Cannot list CDs: couldn't read the SCSI target id from '%s'\n", path);
 			scsi_close(dev);
-			exit(1);
+			return 1;
 		}
 		if (device_list[dev_scsi_id] != TYPE_CD)
 		{
 			fprintf (stderr, "Tried to list CDs, but an emulated CD drive wasn't detected\n");
 			scsi_close(dev);
-			exit(1);
+			return 1;
 		}
-		cli_listcds(dev);
+		if (cli_listcds(dev) != 0)
+			rc = 1;
 	}
 	else if (list == MODE_INQUIRY)
-		cli_inquiry(dev, PRINT_ON);
+		rc = cli_inquiry(dev, PRINT_ON) != 0;
 	else if (list == MODE_DEVICES)
-		cli_printdevices(dev);
+		rc = cli_printdevices(dev) != 0;
 	else if (list == MODE_DEBUG)
-		toolbox_setdebug(dev, file);
+		rc = toolbox_setdebug(dev, file) != 0;
 	else if (list == MODE_DEBUG_GET)
 	{
 		int dbg = toolbox_getdebug(dev);
 		if (dbg >= 0)
 			fprintf (stdout, "Debug mode: %s\n", dbg ? "on" : "off");
+		else
+			rc = 1;
 	}
 	else if (list == MODE_SHARED)
-		cli_listfiles(dev);
+		rc = cli_listfiles(dev) != 0;
 	else if (list == MODE_PUT)
-		toolbox_sendfile (dev, outdir);
+		rc = toolbox_sendfile (dev, outdir) != 0;
 	else if (file != NOT_ACTIVE)
-		toolbox_getfile (dev, file, outdir);
+		rc = toolbox_getfile (dev, file, outdir) != 0;
 	else if (cd_img != NOT_ACTIVE)
 	{
 		if (dev_scsi_id < 0)
+		{
 			fprintf (stderr, "Cannot switch CD: couldn't read the SCSI target id from '%s'\n", path);
+			rc = 1;
+		}
 		else if (device_list[dev_scsi_id] != TYPE_CD)
+		{
 			fprintf (stderr, "Device doesn't seem to be a CD drive? Detected type %i on SCSI ID %i\n", device_list[dev_scsi_id], dev_scsi_id);
+			rc = 1;
+		}
 		else
 		{
 			char mnt[SCSI_PATH_MAX];
@@ -573,6 +611,7 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 				fprintf (stderr, "Close whatever is using it (a shell sitting in the directory counts),\n");
 				fprintf (stderr, "then retry - or pass -f to switch anyway, which risks corrupting the\n");
 				fprintf (stderr, "mounted filesystem.\n");
+				rc = 1;   /* nothing was switched */
 			}
 			else
 			{
@@ -580,14 +619,19 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 					fprintf (stdout, "Unmounted %s before switching.\n", mnt);
 				else if (st == CDSWAP_BUSY)
 					fprintf (stderr, "WARNING: %s is still mounted; switching anyway (-f).\n", mnt);
-				toolbox_setnextcd(dev, cd_img);
+				if (toolbox_setnextcd(dev, cd_img) != 0)
+					rc = 1;
 			}
 		}
 	}
 	else
+	{
 		fprintf (stderr, "No operation requested for %s. Try -i, -t, -s, or -h for help.\n", path);
+		rc = 1;
+	}
 
 	scsi_close(dev);
+	return rc;
 }
 
 /*
@@ -650,6 +694,7 @@ int main(int argc, char *argv[])
 {
 	int c, cdimg = NOT_ACTIVE, list = 0, file = NOT_ACTIVE;
 	int force = 0;
+	int rc;
 	char outdir[1024];
 	/* One byte longer than the protocol allows, so an over-long value still
 	 * arrives at toolbox_wifi_join() intact enough to be REJECTED with a
@@ -797,10 +842,10 @@ int main(int argc, char *argv[])
 	} else if (argc > 1) {
 		fprintf(stderr, "WARNING: extra arguments after '%s' ignored - put options BEFORE the device path.\n", argv[0]);
 	}
-	do_drive(argv[0], list, verbose, cdimg, file, outdir, force);
+	rc = do_drive(argv[0], list, verbose, cdimg, file, outdir, force);
 
 	if (cdimg != -1)
 		mediad_start ();
 
-	return 0;
+	return rc;
 }

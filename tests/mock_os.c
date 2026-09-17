@@ -6,7 +6,7 @@
  * detection logic be exercised on a development machine that has neither IRIX
  * (<sys/dsreq.h>) nor Linux (<scsi/sg.h>) SCSI headers - e.g. macOS.
  *
- * It implements the os.h contract with a synthetic 7-device bus covering the
+ * It implements the os.h contract with a synthetic 10-device bus covering the
  * cases that matter for detection:
  *
  *   d0  plain SGI disk        - no toolbox
@@ -20,19 +20,34 @@
  *                               Wi-Fi commands (0x1C) but NOT the toolbox
  *   d8  real Dayna SCSI/Link  - the vintage card: same INQUIRY identity, no
  *                               radio, so it claims Wi-Fi and fails to answer
+ *   d9  ZuluSCSI, toolbox OFF - a stock ZuluSCSI: zuluscsi.ini defaults to
+ *                               EnableToolbox = 0, yet INQUIRY still carries
+ *                               the name, so it claims and then fails 0xD9
  *
  * Expected result of `make test`: d3 and d5 are marked [TOOLBOX]; d1 is NOT
- * (it must never be accepted on product name alone); d6 is reported as
- * "claims toolbox, no 0xD9 answer"; d4 is skipped; d7 is marked [WIFI] and d8
- * is not - the Wi-Fi check has to be functional too, exactly like the toolbox
- * one, because the emulated and the genuine SCSI/Link are indistinguishable
- * by name.
+ * (it must never be accepted on product name alone); d6 and d9 are reported
+ * as "claims toolbox, no 0xD9 answer", and d9 makes the scan print the
+ * EnableToolbox advice; d4 is skipped; d7 is marked [WIFI] and d8 is not -
+ * the Wi-Fi check has to be functional too, exactly like the toolbox one,
+ * because the emulated and the genuine SCSI/Link are indistinguishable by
+ * name.
  *
  * The mock also enforces the host's 0x1C safety contract: 0x1C is standard
  * RECEIVE DIAGNOSTIC RESULTS, and the host must never emit it to a
  * storage-type target, -F included. Any 0x1C arriving at a node whose INQUIRY
  * peripheral device type is not 0x03 aborts the test (see
  * mock_wifi_floor_check).
+ *
+ * Listings and transfers: the toolbox nodes serve a /shared directory of two
+ * files, one directory and one 2 GiB file (see mock_shared[]) and a CD list whose second
+ * image is 4,433,547,264 bytes - a size that needs the top byte of the 40-bit
+ * field, so a host that folds it into a 32-bit long prints it negative. Entry
+ * byte 1 is written the way the firmware writes it, 0x01 for a file and 0x00
+ * for a directory. GET_FILE serves a byte pattern (offset & 0xFF) and, like
+ * the Wi-Fi floor, treats a request for a block past the end of the file as
+ * fatal: the host knows the exact size, so it has no business reading there.
+ * The ZuluSCSI's CD target (d5) reports a mounted, busy /CDROM, which is what
+ * lets `make test` check that a refused -c exits non-zero and -f goes through.
  *
  * Test scaffolding only - never built into the shipped tool.
  *
@@ -59,7 +74,7 @@
 
 extern int verbose;
 
-#define MOCK_N 9
+#define MOCK_N 10
 static const char *mock_paths[MOCK_N] = {
 	"/dev/mock/sc0d0l0",   /* plain SGI disk    - no toolbox at all      */
 	"/dev/mock/sc0d1l0",   /* IRIS EMUL DISK    - emulated disk, NO tbox */
@@ -69,15 +84,16 @@ static const char *mock_paths[MOCK_N] = {
 	"/dev/mock/sc0d5l0",   /* ZuluSCSI          - real toolbox           */
 	"/dev/mock/sc0d6l0",   /* liar: page 0x31 but no 0xD9 implementation */
 	"/dev/mock/sc0d7l0",   /* emulated DaynaPort: Wi-Fi, no toolbox      */
-	"/dev/mock/sc0d8l0"    /* genuine DaynaPort: same name, no radio     */
+	"/dev/mock/sc0d8l0",   /* genuine DaynaPort: same name, no radio     */
+	"/dev/mock/sc0d9l0"    /* ZuluSCSI with EnableToolbox = 0 (default)  */
 };
 
 /* Does the device serve MODE SENSE page 0x31 with the toolbox magic? */
-static int mock_page31[MOCK_N] = { 0, 0, 0, 1, 0, 0, 1, 0, 0 };
+static int mock_page31[MOCK_N] = { 0, 0, 0, 1, 0, 0, 1, 0, 0, 0 };
 /* Does the device actually IMPLEMENT 0xD9 LIST_DEVICES? */
-static int mock_d9[MOCK_N]     = { 0, 0, 0, 1, 0, 1, 0, 0, 0 };
+static int mock_d9[MOCK_N]     = { 0, 0, 0, 1, 0, 1, 0, 0, 0, 0 };
 /* Does the device actually IMPLEMENT the 0x1C Wi-Fi commands? */
-static int mock_wifi[MOCK_N]   = { 0, 0, 0, 0, 0, 0, 0, 1, 0 };
+static int mock_wifi[MOCK_N]   = { 0, 0, 0, 0, 0, 0, 0, 1, 0, 0 };
 
 /*
  * INQUIRY peripheral device type per node, mirroring fill_inq() below. The
@@ -89,7 +105,7 @@ static int mock_wifi[MOCK_N]   = { 0, 0, 0, 0, 0, 0, 0, 1, 0 };
  * test` fails.
  */
 static const unsigned char mock_pdt[MOCK_N] = {
-	0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03
+	0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03, 0x00
 };
 
 static void mock_wifi_floor_check(int idx)
@@ -150,6 +166,57 @@ static void fill_inq(unsigned char *buf, int len, unsigned char pdt,
 	}
 }
 
+/*
+ * What the toolbox nodes list. Byte 1 of a wire entry is 0x01 for a FILE and
+ * 0x00 for a DIRECTORY - the firmware computes it as
+ * "isDirectory() ? 0x00 : 0x01" - and LIST_CDS never returns a directory.
+ * Sizes are the 40-bit big-endian field exactly as the firmware packs it.
+ */
+typedef struct {
+	unsigned char type;
+	const char *name;
+	unsigned char size[5];
+} mock_entry;
+
+static const mock_entry mock_shared[] = {
+	{ 0x01, "Doom.iso",  { 0x00, 0x00, 0x00, 0x10, 0x00 } },  /* 4096: exactly one block */
+	{ 0x01, "notes.txt", { 0x00, 0x00, 0x00, 0x13, 0x88 } },  /* 5000: one block + 904   */
+	{ 0x00, "games",     { 0x00, 0x00, 0x00, 0x00, 0x00 } },  /* a directory             */
+	{ 0x01, "big.img",   { 0x00, 0x80, 0x00, 0x00, 0x00 } }   /* 2^31: the first size a
+								 * 32-bit off_t cannot
+								 * hold - must be refused
+								 * up front, never read */
+};
+static const mock_entry mock_cds[] = {
+	{ 0x01, "MIPSpro_dev7_4_full.iso", { 0x00, 0x2B, 0xC0, 0x00, 0x00 } }, /*   734,003,200 */
+	{ 0x01, "irix-6-5-22-full.iso",    { 0x01, 0x08, 0x42, 0x90, 0x00 } }  /* 4,433,547,264 */
+};
+#define MOCK_N_SHARED (int)(sizeof(mock_shared) / sizeof(mock_shared[0]))
+#define MOCK_N_CDS    (int)(sizeof(mock_cds) / sizeof(mock_cds[0]))
+
+/* Pack entries the way onListFiles() does: 40 bytes each, back to back. */
+static void mock_fill_entries(unsigned char *buf, int buf_len, const mock_entry *e, int n)
+{
+	int i;
+
+	memset(buf, 0, buf_len);
+	for (i = 0; i < n && (i + 1) * 40 <= buf_len; i++) {
+		unsigned char *p = buf + i * 40;
+
+		p[0] = (unsigned char)i;
+		p[1] = e[i].type;
+		strncpy((char *)p + 2, e[i].name, 32);
+		memcpy(p + 35, e[i].size, 5);
+	}
+}
+
+/* Low 32 bits of a size: enough for the /shared files, which are small. */
+static unsigned long mock_size32(const unsigned char size[5])
+{
+	return ((unsigned long)size[1] << 24) | ((unsigned long)size[2] << 16) |
+	       ((unsigned long)size[3] << 8) | (unsigned long)size[4];
+}
+
 static int mock_command(int dev, unsigned char *cmd, int cmd_len,
 			unsigned char *buf, int buf_len)
 {
@@ -175,6 +242,10 @@ static int mock_command(int dev, unsigned char *cmd, int cmd_len,
 		 * 0x1C answer below tells them apart. */
 		case 7: fill_inq(buf, buf_len, 0x03, "Dayna   ", "SCSI/Link       ", "2.0f", NULL); break;
 		case 8: fill_inq(buf, buf_len, 0x03, "Dayna   ", "SCSI/Link       ", "2.0f", NULL); break;
+		/* Byte-identical to d5: the firmware appends its name to INQUIRY
+		 * whether or not zuluscsi.ini enables the toolbox, so only the
+		 * 0xD9 answer (refused below via mock_d9) tells the two apart. */
+		case 9: fill_inq(buf, buf_len, 0x00, "QUANTUM ", "ZuluSCSI        ", "1.0 ", "ZuluSCSI v2024.05.17"); break;
 		}
 		return 0;
 	}
@@ -195,6 +266,9 @@ static int mock_command(int dev, unsigned char *cmd, int cmd_len,
 		buf[0] = 0x00;  /* HDD */
 		buf[1] = 0x02;  /* CD */
 		buf[2] = 0x02;  /* CD  */
+		buf[3] = 0x00;  /* HDD: the BlueSCSI node itself (d3) */
+		buf[5] = 0x02;  /* CD:  the ZuluSCSI node itself (d5) - so -l / -c
+				 * addressed to it pass the CD gate */
 		return 0;
 	}
 
@@ -270,21 +344,50 @@ static int mock_command(int dev, unsigned char *cmd, int cmd_len,
 		return 0;
 	}
 
-	if (cmd[0] == 0xDA || cmd[0] == 0xD2) { /* COUNT_CDS / COUNT_FILES */
-		if (buf_len >= 1) buf[0] = 2;
+	if (cmd[0] == 0xDA) {                   /* COUNT_CDS */
+		if (buf_len >= 1) buf[0] = (unsigned char)MOCK_N_CDS;
+		return 0;
+	}
+	if (cmd[0] == 0xD2) {                   /* COUNT_FILES */
+		if (buf_len >= 1) buf[0] = (unsigned char)MOCK_N_SHARED;
+		return 0;
+	}
+	if (cmd[0] == 0xD7) {                   /* LIST_CDS: files only */
+		mock_fill_entries(buf, buf_len, mock_cds, MOCK_N_CDS);
+		return 0;
+	}
+	if (cmd[0] == 0xD0) {                   /* LIST_FILES */
+		mock_fill_entries(buf, buf_len, mock_shared, MOCK_N_SHARED);
 		return 0;
 	}
 
-	if (cmd[0] == 0xD7 || cmd[0] == 0xD0) { /* LIST_CDS / LIST_FILES */
-		memset(buf, 0, buf_len);
-		if (buf_len >= 80) {
-			buf[0] = 0; buf[1] = 0;
-			strcpy((char *)buf + 2, "Doom.iso");
-			buf[35] = 0; buf[36] = 0; buf[37] = 0x0A; buf[38] = 0; buf[39] = 0;
-			buf[40] = 1; buf[41] = 1;
-			strcpy((char *)buf + 42, "games");
-			buf[75] = 0; buf[76] = 0; buf[77] = 0; buf[78] = 0x10; buf[79] = 0;
+	if (cmd[0] == 0xD8)                     /* SET_NEXT_CD, no data phase */
+		return cmd[1] < MOCK_N_CDS ? 0 : 1;
+
+	if (cmd[0] == 0xD1) {                   /* GET_FILE: one 4096-byte window */
+		int fidx = cmd[1];
+		unsigned long blk = ((unsigned long)cmd[2] << 24) | ((unsigned long)cmd[3] << 16) |
+				    ((unsigned long)cmd[4] << 8) | (unsigned long)cmd[5];
+		unsigned long fsize;
+		unsigned long off;
+		int i;
+
+		if (!mock_d9[idx])
+			return 1;
+		if (fidx < 0 || fidx >= MOCK_N_SHARED || mock_shared[fidx].type == 0x00)
+			return 1;                  /* no such file, or a directory */
+		fsize = mock_size32(mock_shared[fidx].size);
+		off = blk * 4096UL;
+		if (off >= fsize) {
+			fprintf(stderr, "MOCK: FATAL: GET_FILE asked for block %lu of %s, "
+					"which is past its end (%lu bytes) - the host "
+					"read beyond the size it was given\n",
+				blk, mock_shared[fidx].name, fsize);
+			exit(1);
 		}
+		memset(buf, 0, buf_len);
+		for (i = 0; i < buf_len && off + (unsigned long)i < fsize; i++)
+			buf[i] = (unsigned char)((off + (unsigned long)i) & 0xFF);
 		return 0;
 	}
 
@@ -329,24 +432,35 @@ int scsi_send_commandw(int dev, unsigned char *cmd, int cmd_len, unsigned char *
 }
 
 /*
- * Mount handling: the mock bus has no filesystems, so nothing is ever mounted
- * and the CD-swap guard always sees a clear path. That is the case worth
- * exercising here - the busy path needs a real mount to be meaningful.
+ * Mount handling. The mock bus has no filesystems, but the CD-swap guard needs
+ * both of its outcomes exercised: every node reports nothing mounted (a clear
+ * swap) except the ZuluSCSI CD target d5, whose /CDROM is mounted and cannot be
+ * unmounted because something is sitting in it - the case a refused -c must
+ * turn into a non-zero exit status, and -f must override.
  */
+static void mock_copy(char *out, int outlen, const char *src)
+{
+	if (out == NULL || outlen <= 0)
+		return;
+	strncpy(out, src, outlen - 1);
+	out[outlen - 1] = '\0';
+}
+
 int media_find_mount(const char *path, char *mnt, int mntlen, char *dev, int devlen)
 {
-	(void)path;
-	if (mnt != NULL && mntlen > 0)
-		mnt[0] = '\0';
-	if (dev != NULL && devlen > 0)
-		dev[0] = '\0';
-	return 0;
+	int busy = strstr(path, "sc0d5l0") != NULL;
+
+	mock_copy(mnt, mntlen, busy ? "/CDROM" : "");
+	mock_copy(dev, devlen, busy ? "dks0d5s7" : "");
+	return busy ? 1 : 0;
 }
 
 int media_unmount(const char *mnt, char *why, int whylen)
 {
-	(void)mnt;
-	if (why != NULL && whylen > 0)
-		why[0] = '\0';
+	if (strcmp(mnt, "/CDROM") == 0) {
+		mock_copy(why, whylen, "  /CDROM:   4242c(csh)\n");
+		return -1;
+	}
+	mock_copy(why, whylen, "");
 	return 0;
 }

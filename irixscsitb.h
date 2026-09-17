@@ -231,10 +231,25 @@ typedef struct {
 
 typedef struct {
     unsigned char index;   /* byte 00: file index in directory */
-    unsigned char type;    /* byte 01: type 0 = file, 1 = directory */
+    unsigned char type;    /* byte 01: TOOLBOX_ENTRY_FILE (1) or TOOLBOX_ENTRY_DIR (0) */
     char name[NAME_BUF_SIZE];         /* byte 02-34: filename (32 byte max) + space for NUL terminator */
     unsigned char size[5]; /* byte 35-39: file size (40 bit big endian unsigned) */
 } ToolboxFileEntry;
+
+/*
+ * ToolboxFileEntry.type, as the firmware actually writes it. Both BlueSCSI
+ * (BlueSCSI_Toolbox.cpp) and ZuluSCSI (Toolbox.cpp) compute the byte in
+ * onListFiles() as
+ *
+ *     uint8_t isDir = file.isDirectory() ? 0x00 : 0x01;
+ *
+ * so despite the variable's name a DIRECTORY is 0 and a FILE is 1, and
+ * LIST_CDS skips every entry whose byte is 0. Reading it the other way round
+ * is what once put a trailing "/" on every CD image. Compare against these
+ * names, never against a literal.
+ */
+#define TOOLBOX_ENTRY_DIR  0x00
+#define TOOLBOX_ENTRY_FILE 0x01
 
 /* Longest "<vendor> <product> <rev>" identity string we build from INQUIRY. */
 #define TOOLBOX_IDENTITY_MAX 64
@@ -305,7 +320,17 @@ typedef struct {
  * prints only errors/verbose diagnostics to stderr - never a result - so the
  * CLI and the Motif GUI can share it. Presentation lives in the front ends.
  */
-long int size_to_long(const unsigned char size[5]);
+/*
+ * The 40-bit ToolboxFileEntry.size never lives in a single integer: long is
+ * 32 bits on o32/n32 and long long / %lld cannot be relied on with the 5.3
+ * libc. size_to_str() renders it in decimal straight from the five bytes (at
+ * most 13 digits; out must hold SIZE_STR_MAX) and size_to_blocks() splits it
+ * into whole MAX_DATA_LEN transfer blocks plus the bytes in the final partial
+ * one - which is all a transfer loop needs, and fits in 32 bits.
+ */
+#define SIZE_STR_MAX 16
+char *size_to_str(const unsigned char size[5], char *out);
+void size_to_blocks(const unsigned char size[5], unsigned long *blocks, unsigned int *tail);
 const char *dev_type_name(int t);
 const char *inquiry_pdt_name(unsigned char b0);
 
@@ -315,6 +340,13 @@ int toolbox_countfiles(int dev);
 int toolbox_countcds(int dev);
 int toolbox_setnextcd(int dev, int num);
 int toolbox_sendfile(int dev, char *path);
+/*
+ * toolbox_getfile() returns 0 on success, -1 on a transfer or file error,
+ * and GETFILE_TOO_BIG - before anything is written - when the file cannot be
+ * stored by this build: a 32-bit off_t (o32/n32 IRIX) stops at 2^31-1 bytes,
+ * and refusing up front beats failing with EFBIG two gigabytes in.
+ */
+#define GETFILE_TOO_BIG (-2)
 int toolbox_getfile(int dev, int idx, char *outdir);
 
 /*
@@ -352,6 +384,18 @@ int toolbox_listdevices(int dev, unsigned char map[8]);
 #define TOOLBOX_ERR_INQUIRY   (-1)  /* INQUIRY itself failed */
 #define TOOLBOX_ERR_NO_CLAIM  (-2)  /* device does not advertise the toolbox */
 #define TOOLBOX_ERR_NO_ANSWER (-3)  /* claimed toolbox, but no valid 0xD9 reply */
+
+/*
+ * Firmware-specific advice for a TOOLBOX_ERR_NO_ANSWER rejection, chosen from
+ * the identity that made the claim: a ZuluSCSI advertises the toolbox in
+ * INQUIRY even while zuluscsi.ini has it switched off (its default), and that
+ * is the one thing worth telling the operator. NULL when the claim did not come
+ * from a known firmware name. Never longer than TOOLBOX_HINT_MAX including the
+ * terminator - size message buffers against that constant, since sprintf is
+ * the only formatter available on IRIX 5.3.
+ */
+#define TOOLBOX_HINT_MAX 200
+const char *toolbox_enable_hint(const char *identity);
 
 /*
  * Two-stage detection, available whole or in halves.

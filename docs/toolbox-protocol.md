@@ -138,10 +138,23 @@ All are 10-byte CDBs. "Data-in" = device → host; "data-out" = host → device.
 
 ```
 byte 0      index       (file index in directory)
-byte 1      type        (0 = file, 1 = directory)
+byte 1      type        (1 = file, 0 = directory  - see below)
 byte 2..34  name        (32 bytes; host treats as NUL-terminated, truncates to 32)
 byte 35..39 size        (40-bit big-endian unsigned byte count)
 ```
+
+**Byte 1 is 1 for a file and 0 for a directory.** The firmware computes it in
+`onListFiles()` as `uint8_t isDir = file.isDirectory() ? 0x00 : 0x01;` (same
+line in BlueSCSI_Toolbox.cpp and ZuluSCSI's Toolbox.cpp), and LIST_CDS skips
+every entry whose byte is 0, so a CD listing never contains a directory. The
+host compares against `TOOLBOX_ENTRY_DIR` / `TOOLBOX_ENTRY_FILE`; reading the
+byte the other way round once marked every CD image with a trailing `/`.
+
+**The size uses all 40 bits.** A 4.13 GB DVD image is `0x01 08 42 90 00`, and
+the host never folds that into a `long` (32 bits on o32/n32, and `long long`
+is not dependable on the 5.3 libc): `size_to_str()` renders it in decimal
+from the bytes and `size_to_blocks()` turns it into a block count for
+GET_FILE.
 
 Host reads `count` from COUNT_FILES/COUNT_CDS first, then sizes its receive
 buffer to `count * 40` for the LIST call. Return entries packed back-to-back.
@@ -149,9 +162,12 @@ buffer to `count * 40` for the LIST call. Return entries packed back-to-back.
 ### 2.2 GET_FILE (`0xD1`)
 
 Host loops: `CDB[1]`=file index, `CDB[2..5]`=block offset counted in **4096-byte
-blocks**, big-endian. Device returns up to 4096 bytes (data-in) per call. Host
-stops when it has written `size` bytes (from the file's `ToolboxFileEntry`), so
-the device just needs to serve the requested 4096-byte window.
+blocks**, big-endian. Device returns up to 4096 bytes (data-in) per call. The
+host asks for exactly `ceil(size / 4096)` blocks - the count comes from the
+40-bit size, so files over 4 GB are just more blocks - writes the final block
+short, and never requests a window past the end of the file (the mock bus
+treats such a request as fatal). The device just needs to serve the requested
+4096-byte window.
 
 ### 2.3 SEND_FILE (PUT) — `0xD3` → `0xD4`… → `0xD5`
 
@@ -180,9 +196,20 @@ bytes**, one per SCSI ID 0–7. Each byte is the device type:
 ```
 
 The host stores these in `device_list[]` and uses them to gate CD operations
-(`-l`, `-c`) — those require the target's byte to be `0x02` (CD). It is fetched
-after acceptance and a failure is non-fatal, so it is no longer required for
-detection, but you should still implement it for CD support.
+(`-l`, `-c`) — those require the target's byte to be `0x02` (CD). It is also
+the **confirmation stage of detection**: a device that claimed the toolbox
+(§1a/§1b) must answer this with a plausible map — every byte `0x00`–`0x07` or
+`0xFF`, at least one target enabled — or it is reported as
+`claims toolbox, no 0xD9 answer` and never driven.
+
+Note that on real firmware the claim and the answer are gated differently:
+`inquiry.c` appends the firmware name to INQUIRY unconditionally, but
+`scsi.c` only routes `0xD0`–`0xDA` to the toolbox handler when
+`scsiToolboxEnabled()` is true, i.e. `EnableToolbox = 1` under `[SCSI]` in
+the board's ini. **ZuluSCSI defaults that to `0`**, BlueSCSI to `1`. A stock
+ZuluSCSI therefore claims and then answers `0xD9` with CHECK CONDITION
+(ILLEGAL REQUEST, INVALID COMMAND OPERATION CODE); the host recognises the
+firmware from the identity and prints the `EnableToolbox` advice.
 
 ## 2.5 Wi-Fi commands (`0x1C`) — a different CDB on a different target
 
