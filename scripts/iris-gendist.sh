@@ -21,24 +21,26 @@
 # case) — nothing here will ever touch it.
 #
 # Each invocation produces the product for ONE flavor, packaged by the
-# matching OS: --guest 53 packages irixscsitb-o32 (5.3-format product,
-# readable by every inst 5.3-6.5) into OUTDIR; --guest 65 packages
-# irixscsitb-n32 (6.5 format).
+# matching OS: --flavor o32 or mips1 packages irixscsitb-<flavor> in the 5.3
+# guest (5.3-format product, readable by every inst 5.3-6.5); --flavor n32
+# packages irixscsitb-n32 in the 6.5 guest (6.5 format). The older
+# --guest 53|65 still works and means o32 / n32.
 #
 # Usage:
-#   scripts/iris-gendist.sh --dir DIR --version V [--guest 53|65]
+#   scripts/iris-gendist.sh --dir DIR --version V [--flavor o32|mips1|n32]
 #       [--image PATH] [--iris-dir DIR] [--rb-cli PATH] [--outdir DIR]
 #       [--dist-version N] [--workdir DIR] [--fresh]
 #
-#   --dir DIR          where the built binaries live (irixscsitb-o32 or
-#                      irixscsitb-n32 per --guest; GUI included when present)
-#   --outdir DIR       where the product trio lands [DIR/inst53 or DIR/inst65]
+#   --dir DIR          where the built binaries live (irixscsitb-<flavor>;
+#                      GUI included when present)
+#   --outdir DIR       where the product trio lands [DIR/inst<key>: inst53,
+#                      instmips1 or inst65]
 set -eu
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 . "$REPO/scripts/ci-lib.sh"
 
-GUEST="53"
+FLAVOR="o32"
 DIR=""
 OUTDIR=""
 VERSION=""
@@ -54,7 +56,8 @@ die() { echo "iris-gendist: $*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--guest)        GUEST="$2"; shift 2 ;;
+		--flavor)       FLAVOR="$2"; shift 2 ;;
+		--guest)        case "$2" in 53) FLAVOR=o32 ;; 65) FLAVOR=n32 ;; *) die "--guest must be 53 or 65" ;; esac; shift 2 ;;
 		--dir)          DIR="$2"; shift 2 ;;
 		--outdir)       OUTDIR="$2"; shift 2 ;;
 		--version)      VERSION="$2"; shift 2 ;;
@@ -64,7 +67,7 @@ while [ $# -gt 0 ]; do
 		--rb-cli)       RB="$2"; shift 2 ;;
 		--workdir)      WORKDIR="$2"; shift 2 ;;
 		--fresh)        FRESH=1; shift ;;
-		-h|--help)      sed -n '2,36p' "$0"; exit 0 ;;
+		-h|--help)      sed -n '2,38p' "$0"; exit 0 ;;
 		*)              die "unknown option: $1" ;;
 	esac
 done
@@ -72,11 +75,8 @@ done
 load_local_conf
 [ -n "$RB" ] || RB="${RB_CLI:-rb-cli}"
 
-case "$GUEST" in
-	53) FLAVOR="o32"; INST_NAME="inst53" ;;
-	65) FLAVOR="n32"; INST_NAME="inst65" ;;
-	*)  die "--guest must be 53 or 65" ;;
-esac
+GUEST=$(flavor_guest "$FLAVOR") || die "--flavor must be one of: $FLAVORS"
+INST_NAME="inst$(flavor_dist_key "$FLAVOR")"
 
 [ -n "$DIR" ] || die "missing --dir (the directory with irixscsitb-$FLAVOR)"
 DIR=$(cd "$DIR" 2>/dev/null && pwd) || die "not a directory: $DIR"
@@ -96,10 +96,7 @@ fi
 [ -f "$IMAGE" ] || die "boot disk not found: $IMAGE"
 IMAGE=$(cd "$(dirname "$IMAGE")" && pwd)/$(basename "$IMAGE")
 
-case "$GUEST" in
-	53) CONFIG="$REPO/ci/iris-irix53.toml" ;;
-	65) CONFIG="$REPO/ci/iris-irix65.toml" ;;
-esac
+CONFIG="$REPO/ci/iris-irix$GUEST.toml"
 
 if [ -z "$IRIS_DIR" ]; then IRIS_DIR="$REPO/../iris"; fi
 if ! _r=$(cd "$IRIS_DIR" 2>/dev/null && pwd); then

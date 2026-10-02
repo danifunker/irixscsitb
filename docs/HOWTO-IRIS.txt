@@ -2,7 +2,9 @@ irixscsitb - build & test on IRIX 5.3 in the IRIS emulator
 ===================================================
 
 This folder has everything needed to build irixscsitb natively on IRIX 5.3
-(o32/mips2, the ABI that runs across 5.3 - 6.5) and to test the new features.
+(o32, the ABI that runs across 5.3 - 6.5) and to test the new features.
+./build.sh builds o32/mips2 - or o32/mips1 on an R2000/R3000, which cannot
+run mips2 code; ./build.sh irix-mips1 forces that.
 
 TWO binaries get built:
   irixscsitb   the command-line tool. No X dependency - works headless and over

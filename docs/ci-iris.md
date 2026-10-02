@@ -34,8 +34,12 @@ scripts/fetch-iris.sh --dir ../iris          # or: cd ../iris && cargo build --r
 cp ci/local.conf.example ci/local.conf
 $EDITOR ci/local.conf                 # set IRIX53_IMAGE / IRIX65_IMAGE
 
-# o32 binaries (IRIX 5.3 guest; runs on 5.3-6.5) + .iso/.hda/.tar.gz packaging
+# o32/mips2 binaries (IRIX 5.3 guest; runs on 5.3-6.5, R4000 and up)
+# + .iso/.hda/.tar.gz packaging
 scripts/iris-build.sh --flavor o32 --version 2026-07-28
+
+# o32/mips1 binaries (same 5.3 guest; runs on any MIPS CPU incl. R3000)
+scripts/iris-build.sh --flavor mips1
 
 # n32 binaries (IRIX 6.5 guest; 6.x only, faster; binaries only)
 scripts/iris-build.sh --flavor n32
@@ -44,8 +48,8 @@ scripts/iris-build.sh --flavor n32
 `ci/local.conf` is the one per-machine config (parsed KEY=VALUE, never
 sourced; precedence everywhere is flag > environment variable > conf):
 `IRIX53_IMAGE`/`IRIX65_IMAGE` (local disks), `IRIX53_DISK_URL`/
-`IRIX65_DISK_URL` (private download URLs instead), `BUILD_O32`/`BUILD_N32`
-(disable a flavor), `IRIS_DIR`, `IRIS_RELEASE_REPO`/`IRIS_TAG`, `RB_CLI` —
+`IRIX65_DISK_URL` (private download URLs instead), `BUILD_O32`/`BUILD_MIPS1`/
+`BUILD_N32` (disable a flavor), `IRIS_DIR`, `IRIS_RELEASE_REPO`/`IRIS_TAG`, `RB_CLI` —
 the `.example` documents each. Add `--fresh` to reset the guest to its
 pristine state first (deletes the overlay). Everything the run used — machine
 config, NVRAM, serial console log, work disk — is kept in the printed work
@@ -61,7 +65,7 @@ dir for inspection.
 | Everything on one partition (or adapt the mount step) | 5.3 builds run single-user |
 | — no network config, no DHCP, no NVRAM MAC | media transfer doesn't need any |
 
-The 5.3 flavor boots **single-user** (`sash` → `unix initstate=s`), so no rc2
+The 5.3 flavors boot **single-user** (`sash` → `unix initstate=s`), so no rc2
 service ever runs — third-party daemons that block a headless multiuser boot
 (a tgcware `prngd` gathering entropy in the foreground, `xdm` respawning on a
 machine with no graphics head) simply never start. The 6.5 flavor boots
@@ -91,11 +95,12 @@ exit* — a slow rewrite of exactly the file CI wants immutable.
 **Each OS packages its own build.** In the same guest session that compiles,
 `iris-build.sh` runs the guest's native **`gendist`** over
 `inst/irixscsitb.spec` + `.idb` (templated per flavor by
-`scripts/ci-lib.sh`): the 5.3 guest emits a 5.3-format product for its o32
-binaries — the format every inst from 5.3 through 6.5 reads — and the 6.5
-guest a 6.5-format product for its n32 binaries. Packaging places them at
-`/dist53` and `/dist65` on the media (mediad + `inst -f /CDROM/dist53` just
-work) and emits per-flavor `.tardist` artifacts. `--no-gendist` (or
+`scripts/ci-lib.sh`): the 5.3 guest emits a 5.3-format product for each of
+its o32 builds (mips2 and mips1) — the format every inst from 5.3 through 6.5
+reads — and the 6.5 guest a 6.5-format product for its n32 binaries.
+Packaging places them at `/dist53`, `/distmips1` and `/dist65` on the media
+(mediad + `inst -f /CDROM/dist53` just work) and emits per-flavor `.tardist`
+artifacts. `--no-gendist` (or
 `BUILD_INST=0`) skips it; a guest without gendist skips it with a warning —
 unless `--require-gendist` was passed, which the release pipelines do.
 
@@ -162,7 +167,7 @@ installed software. The boot image stays pristine throughout.
    land on the work disk) and **`BUILD_CMD`** (what to run inside the guest).
    Everything else — boot, mount, sentinel, extraction — is project-agnostic.
 3. If your image splits `/usr` onto another partition, add `mount /usr` after
-   the single-user login (5.3 flavor only).
+   the single-user login (5.3 flavors only).
 4. In CI, host the image where the runner can fetch it (private release asset,
    object storage — it's your licensed install, keep it private), or use a
    self-hosted runner that already has it on disk.
@@ -178,7 +183,7 @@ bodies are one-liners, so the paths cannot drift:
 |---|---|---|
 | get the emulator | `fetch-iris.sh` | `IRIS_RELEASE_REPO`/`IRIS_TAG` |
 | get rb-cli | `ensure-rbcli.sh` | `RB_CLI`, PATH, else downloads |
-| flavor on/off | `fetch-image.sh --enabled` | `BUILD_O32`/`BUILD_N32` |
+| flavor on/off | `fetch-image.sh --enabled` | `BUILD_O32`/`BUILD_MIPS1`/`BUILD_N32` |
 | get the boot disk | `fetch-image.sh` | `IRIX53_IMAGE`/`IRIX65_IMAGE`, else `IRIX53_DISK_URL`/`IRIX65_DISK_URL` |
 | preflight | `fetch-image.sh --check-only` | same |
 | build | `iris-build.sh` | — |
@@ -198,7 +203,7 @@ transport between jobs, and apt packages on the runner. None of it is logic.
 ## The release workflow (this repo's implementation)
 
 `.github/workflows/release.yml` is the reference implementation: a matrixed
-`build-native` job (o32 → 5.3 guest, n32 → 6.5 guest) whose steps are the
+`build-native` job (o32 and mips1 → 5.3 guest, n32 → 6.5 guest) whose steps are the
 script calls above; a `package` job (`package-dist.sh`); a `release` job
 (`publish-release.sh`).
 
@@ -224,12 +229,16 @@ which repo the releases come from (default `techomancer/iris`, the upstream
 emulator; its tags are `v<YYYY-MM-DD-HH-MM>`).
 
 **Enabling/disabling a flavor:** only have one of the two images? The same
-switch exists at every front door — `BUILD_O32=0`/`BUILD_N32=0` in
-`ci/local.conf` (or the environment) locally, the `build_o32`/`build_n32`
-dispatch inputs or `BUILD_O32`/`BUILD_N32` repo variables in Actions (the
-preflight job computes the build matrix from them), and `--skip-o32`/
-`--skip-n32` on `release-local.sh`. Packaging adapts: with no o32 pair the
-images carry the n32 binaries instead, with a loud 6.x-only note.
+switch exists at every front door — `BUILD_O32=0`/`BUILD_MIPS1=0`/
+`BUILD_N32=0` in `ci/local.conf` (or the environment) locally, the
+`build_o32`/`build_mips1`/`build_n32` dispatch inputs or the matching
+`BUILD_*` repo variables in Actions (the preflight job computes the build
+matrix from them), and `--skip-o32`/`--skip-mips1`/`--skip-n32` on
+`release-local.sh`. Packaging adapts — the media carry a `dist<key>` per
+flavor actually built, with a loud note when o32 or mips1 is missing — and
+the release notes' download table lists only what was attached. o32 and
+mips1 share the 5.3 image, so switching off the 6.5 image means disabling
+n32 alone.
 
 ### Third option: build AND release from your own machine
 
@@ -283,4 +292,5 @@ exact workaround if so.
 | Whole script, fresh overlay | ~4 min | ~6–8 min |
 
 GitHub-hosted runners (no JIT warm cache, slower cores) should budget roughly
-2–3× that; both flavors still fit comfortably in a normal job.
+2–3× that; every flavor still fits comfortably in a normal job (they run as
+parallel matrix jobs, so the extra mips1 build adds no wall time there).

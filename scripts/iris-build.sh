@@ -3,15 +3,20 @@
 # and out on a WORK DISK — an SGI EFS hard-disk image assembled by rb-cli on
 # the host, attached to the guest as a second SCSI drive. No networking is
 # required in the guest at all: no DHCP, no NVRAM eaddr, no NFS. This is the
-# headless-CI build path for both native flavors:
+# headless-CI build path for all three native flavors (the table is in
+# scripts/ci-lib.sh):
 #
-#   --flavor o32   IRIX 5.3 guest, `make` (o32/mips2 CLI + Motif GUI).
-#                  Runs on every IRIX 5.3-6.5. Boots SINGLE-USER via sash, so
-#                  none of the image's rc2 services run — no mediad, no xdm,
-#                  no third-party daemons that could hang a headless boot
-#                  (a tgcware prngd wedged multiuser boots during bring-up).
-#   --flavor n32   IRIX 6.5 guest, `make irix-n32` (+ GUI, non-fatal).
-#                  Faster binary, 6.x-only. Boots MULTIUSER (proven clean).
+#   --flavor o32    IRIX 5.3 guest, `make irix-o32` (o32/mips2 CLI + Motif
+#                   GUI). Runs on every IRIX 5.3-6.5 on an R4000 or later.
+#   --flavor mips1  IRIX 5.3 guest, `make irix-mips1` (o32/mips1). Runs on
+#                   ANY MIPS CPU, including the R3000 machines, which refuse
+#                   a mips2 binary outright.
+#                   Both 5.3 flavors boot SINGLE-USER via sash, so none of
+#                   the image's rc2 services run — no mediad, no xdm, no
+#                   third-party daemons that could hang a headless boot (a
+#                   tgcware prngd wedged multiuser boots during bring-up).
+#   --flavor n32    IRIX 6.5 guest, `make irix-n32` (+ GUI, non-fatal).
+#                   Faster binary, 6.x-only. Boots MULTIUSER (proven clean).
 #
 # WHY native-in-IRIS instead of a cross-compiler: GNU binutils cannot link
 # IRIX 5.3's o32 shared libs (sgi1.0 RLD format) and 5.3 has no static libc.a,
@@ -40,7 +45,7 @@
 #   - rb-cli with `new hd sgi-efs --from-dir` (release 2026-07 or later).
 #
 # Usage:
-#   scripts/iris-build.sh --flavor o32 [--image /path/to/irix53.chd] \
+#   scripts/iris-build.sh --flavor o32|mips1|n32 [--image /path/to/irix53.chd] \
 #       [--iris-dir ../iris] [--config ci/iris-irix53.toml] [--rb-cli rb-cli] \
 #       [--outdir dist] [--workdir DIR] [--fresh] [--version V] \
 #       [--no-package] [--no-gendist] [--require-gendist] \
@@ -49,8 +54,9 @@
 # PACKAGING BY THE OS THAT BUILT IT: unless --no-gendist (or BUILD_INST=0),
 # the same guest session also runs ITS OWN native gendist over
 # inst/irixscsitb.{spec,idb}, emitting the Software Manager product trio to
-# $OUTDIR/inst53 (o32 flavor) or $OUTDIR/inst65 (n32) — a 5.3-format product
-# from the 5.3 guest, a 6.5-format one from the 6.5 guest. If the guest has no
+# $OUTDIR/inst<key> — inst53 (o32), instmips1 (mips1) or inst65 (n32): a
+# 5.3-format product from the 5.3 guest, a 6.5-format one from the 6.5 guest.
+# If the guest has no
 # /usr/sbin/gendist (the inst_dev.sw "Software Packager" subsystem), the step
 # is skipped with a warning — scripts/iris-gendist.sh can provision it from
 # the IDO CD. --require-gendist turns that skip into a hard failure, which is
@@ -60,14 +66,14 @@
 #
 # WHERE THE BOOT DISK COMES FROM (first match wins):
 #   1. --image PATH
-#   2. $IRIX53_IMAGE / $IRIX65_IMAGE (per flavor)
+#   2. $IRIX53_IMAGE / $IRIX65_IMAGE (per guest: o32 and mips1 both use 5.3)
 #   3. ci/local.conf — per-machine paths, .gitignore'd; copy
 #      ci/local.conf.example and edit. It may also set IRIS_DIR.
 #      Parsed (KEY=VALUE), never sourced — no shell code runs from it.
 #
 # The o32 flavor packages .iso/.hda/.tar.gz via scripts/package.sh when
-# --version is given (skip with --no-package); the n32 flavor only ever emits
-# binaries (the distributable images always carry the portable o32 build).
+# --version is given (skip with --no-package); mips1 and n32 only ever emit
+# binaries + their product here (package-dist.sh assembles the full media).
 # --bin-out / --gui-out additionally copy the CLI / GUI binary to fixed paths
 # (what CI uploads as artifacts).
 set -eu
@@ -121,11 +127,11 @@ load_local_conf   # ci/local.conf fills in whatever flags/env didn't set
 inst_enabled || DO_GENDIST=0
 
 # ---- validate arguments ----------------------------------------------------
-case "$FLAVOR" in
-	o32) : "${CONFIG:=$REPO/ci/iris-irix53.toml}"; IMG_KEY="IRIX53_IMAGE" ;;
-	n32) : "${CONFIG:=$REPO/ci/iris-irix65.toml}"; IMG_KEY="IRIX65_IMAGE"; DO_PACKAGE=0 ;;
-	*)   die "--flavor must be o32 or n32" ;;
-esac
+GUEST=$(flavor_guest "$FLAVOR") || die "--flavor must be one of: $FLAVORS"
+IMG_KEY=$(flavor_img_key "$FLAVOR")
+DIST_KEY=$(flavor_dist_key "$FLAVOR")
+: "${CONFIG:=$REPO/ci/iris-irix$GUEST.toml}"
+[ "$FLAVOR" = o32 ] || DO_PACKAGE=0
 
 # Boot disk: --image > $IRIX53_IMAGE/$IRIX65_IMAGE env > ci/local.conf
 # (resolution shared with fetch-image.sh via ci-lib.sh; use fetch-image.sh
@@ -248,7 +254,7 @@ done
 CI start
 ser_wait "Option?" 90 || die "PROM menu never appeared (see $CONSOLE)"
 
-if [ "$FLAVOR" = o32 ]; then
+if [ "$GUEST" = 53 ]; then
 	# Single-user via the command monitor + sash (the PROM cannot read EFS
 	# itself). initstate=s keeps every rc2 service out of the picture.
 	echo ">>> booting single-user (command monitor -> sash -> unix initstate=s)"
@@ -285,15 +291,12 @@ ser_wait "IRIXTB-MNT-OK" 60 || { echo "work disk mount failed:" >&2; tail -10 "$
 # Every guest line below is deliberately csh-AND-sh clean (`;`, `&&`, `||`,
 # `( )` — no `$?`, no `{ }`, no redirects), because root's login shell varies
 # by image (stock IRIX root is csh; both dev disks here use bash).
-if [ "$FLAVOR" = o32 ]; then
-	BUILD_CMD="make"           # detect: uname IRIX -> o32 CLI + GUI (GUI non-fatal)
-	CLI_NAME="irixscsitb-o32"; GUI_NAME="scsitbgui-o32"
-else
-	# On an IP22 6.5 guest uname says IRIX (not IRIX64), so ask for n32
-	# explicitly; keep the GUI attempt non-fatal like the detect target does.
-	BUILD_CMD="make irix-n32 && (make irix-gui-n32 || echo GUI skipped)"
-	CLI_NAME="irixscsitb-n32"; GUI_NAME="scsitbgui-n32"
-fi
+# Always name the flavor's target rather than trusting `make`'s detection: on
+# an IP22 6.5 guest uname says IRIX (not IRIX64), and the guest's CPU is not
+# the CPU the binary is for. Keep the GUI attempt non-fatal like the detect
+# target does.
+BUILD_CMD="make irix-$FLAVOR && (make irix-gui-$FLAVOR || echo GUI skipped)"
+CLI_NAME="irixscsitb-$FLAVOR"; GUI_NAME="scsitbgui-$FLAVOR"
 
 ser_send "rm -rf /tmp/bsbuild; mkdir /tmp/bsbuild && cp /mnt/*.c /mnt/*.h /mnt/Makefile /tmp/bsbuild && cd /tmp/bsbuild && $BUILD_CMD && echo IRIXTB-'BUILD'-OK || echo IRIXTB-'BUILD'-FAIL"
 ser_wait_long "IRIXTB-BUILD-OK" 4 "native compile" || exit 1
@@ -353,7 +356,7 @@ if "$RB" ls "$HDA@1" /out 2>/dev/null | grep -q "$GUI_NAME"; then
 	GUI_BUILT=1
 fi
 if [ "$DO_GENDIST" = 1 ]; then
-	case "$FLAVOR" in o32) INST_OUT="$OUTDIR/inst53" ;; *) INST_OUT="$OUTDIR/inst65" ;; esac
+	INST_OUT="$OUTDIR/inst$DIST_KEY"
 	mkdir -p "$INST_OUT"
 	for f in irixscsitb irixscsitb.idb irixscsitb.sw; do
 		"$RB" -q get --force "$HDA@1" "/out/inst/$f" "$INST_OUT/$f"

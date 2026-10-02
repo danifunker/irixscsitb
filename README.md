@@ -19,15 +19,22 @@ CLI, plus the Motif development environment (`/usr/include/Xm`, `libXm`) for the
 GUI. A machine without Motif dev still gets a working CLI — the GUI link failing
 is treated as non-fatal. Targets:
 
-| Host | Status |
-|------|--------|
-| IRIX 5.3 – 6.5 | o32 build (`make irix-o32`) runs across the whole range |
-| IRIX 6.5 | n32 build (`make irix-n32`) is faster, 6.x only |
-| Linux (Mint, NixOS, …) | `/dev/sgN` via `SG_IO` |
+| Host | Build |
+|------|-------|
+| IRIX 5.3 – 6.5, R4000 or later | `make irix-o32` — o32 ABI, MIPS II |
+| IRIX 5.3 – 6.5, **any** MIPS CPU incl. R2000/R3000 | `make irix-mips1` — o32 ABI, MIPS I |
+| IRIX 6.x | `make irix-n32` — n32 ABI, MIPS III, the fastest |
+| Linux (Mint, NixOS, …) | `make` — `/dev/sgN` via `SG_IO` |
+
+Plain `make` on IRIX picks for you: n32 on a 64-bit 6.x kernel, otherwise o32
+— at MIPS I when `hinv` reports an R2000/R3000, because those CPUs refuse a
+MIPS II binary outright (*"Program not supported by architecture"*). MIPS I
+is its own build rather than the default so that every other machine keeps
+the MIPS II code. Each `irix-*` target has an `irix-gui-*` twin for the GUI.
 
 ## Motif GUI (IRIX)
 
-`make irix-gui-o32` builds `scsitbgui`, a native **IRIS IM (Motif)** front end,
+`make irix-gui-o32` (or `-mips1` / `-n32`) builds `scsitbgui`, a native **IRIS IM (Motif)** front end,
 alongside the command-line tool. It opens with the SCSI bus already scanned and
 the toolbox-capable devices flagged, same as `irixscsitb -b`.
 
@@ -151,27 +158,37 @@ signal, `-F` skips the claim check and tests it with a real toolbox command.
 
 ## Installing on IRIX (release artifacts)
 
-Each release ships the binaries three ways so you can pick whatever your setup
-makes easy — for the IRIS emulator or real SGI/BlueSCSI hardware:
+Every release carries three builds. **Pick by CPU** — `hinv | grep CPU` on the
+SGI tells you:
+
+| Your machine | Download | Build | Runs on |
+|---|---|---|---|
+| R2000/R3000 — e.g. the R3000 Indigo (IP12) | `irixscsitb-*-mips1.tardist` | o32 ABI, MIPS I — compiled and packaged on IRIX 5.3 | IRIX 5.3 – 6.5 on **any** MIPS CPU |
+| Anything else on IRIX 5.3 – 6.5 — Indy, Indigo R4000, Indigo², Challenge, O2, … | `irixscsitb-*-53.tardist` | o32 ABI, MIPS II — compiled and packaged on IRIX 5.3 | IRIX 5.3 – 6.5, R4000 or later |
+| IRIX 6.x, want the fastest | `irixscsitb-*-65.tardist` | n32 ABI, MIPS III — compiled and packaged on IRIX 6.5 | IRIX 6.x only |
+
+Each is a **Software Manager package**: download it onto the SGI and open it
+with swmgr, or `tar xvf` it (a plain tar — fine on 5.3) and `inst -f .` in that
+directory. It installs `/usr/sbin/irixscsitb`, the GUI `/usr/sbin/scsitbgui`
+and a Toolchest entry ("SCSI Toolbox", visible after the window manager
+restarts; it hides itself if the GUI is removed). All three are the same
+product, so installing a different one later replaces what you have.
+
+The same builds also come as:
 
 | Artifact | What it is | How to use |
 |----------|-----------|------------|
-| `irixscsitb-*-53.tardist` | **Software Manager package (o32)** — built *and packaged* on IRIX 5.3, readable by every inst 5.3–6.5 | Download onto IRIX, open with swmgr — or `inst -f irixscsitb-*-53.tardist`. |
-| `irixscsitb-*-65.tardist` | **Software Manager package (n32)** — built and packaged on IRIX 6.5, 6.x only | Same, on 6.x. |
-| `irixscsitb-*.iso.gz` | IRIX EFS CD-ROM image (volume `SCSITB`), gzipped | `gunzip`, then attach as a CD in IRIS (`cdrom = true`) or burn it. mediad mounts it at `/CDROM`; then **`inst -f /CDROM/dist53`** (or `dist65` on 6.x). |
-| `irixscsitb-*.hda.gz` | SGI EFS hard-disk image (dvh + EFS root), gzipped | `gunzip`, attach as a SCSI disk in IRIS (`cdrom = false`), mount, `inst -f` from the mounted `dist53`/`dist65`. |
-| `irixscsitb-*.tar.gz` | the media tree + raw binaries (`bin53/`, `bin65/`, executable bits set) | Easiest with the IRIS emulator's built-in NFS server: drop the extracted tree in a `[nfs] shared_dir` folder, then inside IRIX `mount 192.168.0.1:/ /mnt && cp /mnt/*/bin53/irixscsitb /usr/sbin/`. |
+| `irixscsitb-<flavor>`, `scsitbgui-<flavor>` | the raw binaries of each build (`o32`, `mips1`, `n32`) | copy to `/usr/sbin` and `chmod +x`; nothing else installed |
+| `irixscsitb-*.iso.gz` | IRIX EFS CD-ROM image (volume `SCSITB`), gzipped, carrying all three packages as **`/dist53`**, **`/distmips1`** and **`/dist65`** | `gunzip`, then attach as a CD in IRIS (`cdrom = true`) or burn it. mediad mounts it at `/CDROM`; then **`inst -f /CDROM/dist53`** (or the directory for your machine). |
+| `irixscsitb-*.hda.gz` | the same on an SGI EFS hard-disk image (dvh + EFS root), gzipped | `gunzip`, attach as a SCSI disk in IRIS (`cdrom = false`), mount, `inst -f` from the mounted `dist*` directory. |
+| `irixscsitb-*.tar.gz` | the media tree + raw binaries (`bin53/`, `binmips1/`, `bin65/`, executable bits set) | Easiest with the IRIS emulator's built-in NFS server: drop the extracted tree in a `[nfs] shared_dir` folder, then inside IRIX `mount 192.168.0.1:/ /mnt && cp /mnt/*/bin53/irixscsitb /usr/sbin/`. |
 
-The packages install the binaries into `/usr/sbin` **and the Toolchest
-entry** ("SCSI Toolbox", visible after the window manager restarts; it hides
-itself if the GUI is removed). Every medium carries **`/dist53`** and
-**`/dist65`** — each a complete
-Software Manager distribution **packaged by the OS that built it** (the 5.3
-guest's own `gendist` packages the o32 build in the 5.3 product format that
-every inst through 6.5 reads; the 6.5 guest packages its n32 build) — plus a
-`README-dist.txt` saying exactly that. The images ship gzipped because they
-are mostly empty space; the raw `.iso`/`.hda` also come out of a local build
-for direct IRIS attachment.
+Each `dist*` directory is a complete Software Manager distribution **packaged
+by the OS that built it** — the 5.3 guest's own `gendist` packages both o32
+builds in the 5.3 product format that every inst through 6.5 reads; the 6.5
+guest packages its n32 build — and the media's `README-dist.txt` says which is
+which. The images ship gzipped because they are mostly empty space; the raw
+`.iso`/`.hda` also come out of a local build for direct IRIS attachment.
 
 ## CI: built natively on IRIX, inside the IRIS emulator
 
@@ -182,9 +199,10 @@ own MIPSpro `cc` over the emulated serial console. This repo doubles as a
 **sample project** for building any IRIX software this way — the deep-dive is
 [`docs/ci-iris.md`](docs/ci-iris.md); the short version:
 
-- **Native, twice.** The o32 binaries come from an IRIX 5.3 guest (a GNU
-  cross-toolchain cannot *link* for 5.3, and no cross sysroot has Motif
-  headers for the GUI); the faster n32 binaries come from an IRIX 6.5 guest.
+- **Native, three times.** Both o32 builds (MIPS II and MIPS I) come from an
+  IRIX 5.3 guest (a GNU cross-toolchain cannot *link* for 5.3, and no cross
+  sysroot has Motif headers for the GUI); the faster n32 binaries come from an
+  IRIX 6.5 guest.
 - **No networking in the guest.** Sources ride in — and binaries ride out —
   on an EFS "work disk" built per run by
   [rb-cli](https://github.com/danifunker/rusty-backup) and attached as a
@@ -217,7 +235,7 @@ conf):
 |---|---|
 | `IRIX53_IMAGE` / `IRIX65_IMAGE` | paths to your installed dev boot disks (`.chd`) |
 | `IRIX53_DISK_URL` / `IRIX65_DISK_URL` | private download URLs instead of local paths |
-| `BUILD_O32=0` / `BUILD_N32=0` | disable a flavor (only have one image? turn the other off) |
+| `BUILD_O32=0` / `BUILD_MIPS1=0` / `BUILD_N32=0` | disable a flavor (only have one image? turn the other image's flavors off — o32 and mips1 both use the 5.3 image) |
 | `IRIS_DIR` | where the emulator lives [`../iris`] |
 | `IRIS_RELEASE_REPO` / `IRIS_TAG` | which iris releases to fetch, optional version pin [`techomancer/iris` @ `latest`] |
 | `RB_CLI` | rb-cli binary [PATH, else auto-downloaded] |
@@ -226,9 +244,10 @@ conf):
 
 ```sh
 scripts/iris-build.sh --flavor o32 --version 1.0   # o32 CLI+GUI + .iso/.hda/.tar.gz
-scripts/iris-build.sh --flavor n32                 # n32 CLI+GUI (binaries only)
+scripts/iris-build.sh --flavor mips1               # o32/MIPS I CLI+GUI (binaries + package)
+scripts/iris-build.sh --flavor n32                 # n32 CLI+GUI (binaries + package)
 scripts/release-local.sh --dry-run                 # rehearse a full release
-scripts/release-local.sh                           # build both + publish via gh
+scripts/release-local.sh                           # build all three + publish via gh
 ```
 
 ### Three ways to cut a release
@@ -240,10 +259,11 @@ scripts/release-local.sh                           # build both + publish via gh
 | **`scripts/release-local.sh`** | on your machine | just `gh` (`--dry-run` to rehearse, `--draft` to stage) |
 
 All three publish the identical artifact set. A flavor can be skipped
-anywhere: `BUILD_O32`/`BUILD_N32` in `ci/local.conf`, the `build_o32`/
-`build_n32` dispatch inputs (or repo variables) in Actions, or
-`--skip-o32`/`--skip-n32` on `release-local.sh` — packaging adapts to
-whatever was built (an n32-only release loudly notes its media is 6.x-only).
+anywhere: `BUILD_O32`/`BUILD_MIPS1`/`BUILD_N32` in `ci/local.conf`, the
+`build_o32`/`build_mips1`/`build_n32` dispatch inputs (or repo variables) in
+Actions, or `--skip-o32`/`--skip-mips1`/`--skip-n32` on `release-local.sh` —
+packaging adapts to whatever was built, and the release notes' download table
+lists only what is actually attached.
 
 ## Usage
 

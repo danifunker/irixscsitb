@@ -57,7 +57,10 @@
 #define ABI_NOTE "IRIX 6.x only"
 #elif defined(BUILD_O32)
 #define ABI_NAME "o32 (mips2)"
-#define ABI_NOTE "runs on IRIX 5.3 through 6.5"
+#define ABI_NOTE "runs on IRIX 5.3 through 6.5, R4000 or later"
+#elif defined(BUILD_MIPS1)
+#define ABI_NAME "o32 (mips1)"
+#define ABI_NOTE "runs on IRIX 5.3 through 6.5, any MIPS CPU incl. R3000"
 #else
 #define ABI_NAME "host"
 #define ABI_NOTE "development build, not for distribution"

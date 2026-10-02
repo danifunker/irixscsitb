@@ -24,9 +24,15 @@
 #                          actions/cache); prints "local" when a local path
 #                          will be used, so callers can skip caching.
 #   --enabled              exit 0 if this flavor is enabled (BUILD_O32 /
-#                          BUILD_N32 from env or ci/local.conf; default on),
-#                          1 if switched off. Lets the workflow's matrix
-#                          filter use the same logic as release-local.sh.
+#                          BUILD_MIPS1 / BUILD_N32 from env or ci/local.conf;
+#                          default on), 1 if switched off. Lets the workflow's
+#                          matrix filter use the same logic as release-local.sh.
+#   --guest                print the IRIX release that builds this flavor (53
+#                          or 65). o32 and mips1 share the 5.3 disk, so the
+#                          workflow keys its download cache on this rather
+#                          than on the flavor (one 5.3 download, not two).
+#
+# The default --dest is guest-disk-<guest>.chd for the same reason.
 #
 # Usage:
 #   IMG=$(scripts/fetch-image.sh --flavor o32 [--dest guest-disk.chd])
@@ -51,18 +57,20 @@ while [ $# -gt 0 ]; do
 		--check-only) MODE="check"; shift ;;
 		--cache-key)  MODE="key"; shift ;;
 		--enabled)    MODE="enabled"; shift ;;
-		-h|--help)    sed -n '2,34p' "$0"; exit 0 ;;
+		--guest)      MODE="guest"; shift ;;
+		-h|--help)    sed -n '2,41p' "$0"; exit 0 ;;
 		*)            die "unknown option: $1" ;;
 	esac
 done
 
 load_local_conf   # ci/local.conf fills in whatever flags/env didn't set
 
-IMG_KEY=$(flavor_img_key "$FLAVOR") || die "--flavor must be o32 or n32"
+GUEST=$(flavor_guest "$FLAVOR") || die "--flavor must be one of: $FLAVORS"
+IMG_KEY=$(flavor_img_key "$FLAVOR")
 URL_KEY=$(flavor_url_key "$FLAVOR")
 LOCAL=$(resolve_local_image "$FLAVOR")
 URL=$(resolve_disk_url "$FLAVOR")
-[ -n "$DEST" ] || DEST="guest-disk-$FLAVOR.chd"
+[ -n "$DEST" ] || DEST="guest-disk-$GUEST.chd"
 
 no_source() {
 	die "no boot disk source for --flavor $FLAVOR: pass a local path (\$$IMG_KEY,
@@ -71,12 +79,16 @@ no_source() {
 }
 
 case "$MODE" in
+guest)
+	echo "$GUEST"
+	exit 0
+	;;
 enabled)
 	if flavor_enabled "$FLAVOR"; then
 		echo "fetch-image: $FLAVOR enabled" >&2
 		exit 0
 	fi
-	echo "fetch-image: $FLAVOR disabled (BUILD_O32/BUILD_N32)" >&2
+	echo "fetch-image: $FLAVOR disabled (BUILD_O32/BUILD_MIPS1/BUILD_N32)" >&2
 	exit 1
 	;;
 key)

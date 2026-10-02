@@ -1,5 +1,5 @@
 # ci/iris-irix53.toml — IRIS machine config for the headless CI build of the
-# o32 (IRIX 5.3, runs 5.3-6.5) binaries.
+# o32/mips2 and o32/mips1 (IRIX 5.3, run on 5.3-6.5) binaries.
 #
 # Boots an ALREADY-INSTALLED IRIX 5.3 system disk. scripts/iris-build.sh
 # overrides the disk paths on the command line (--scsi1 boot disk, --scsi2

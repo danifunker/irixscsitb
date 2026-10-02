@@ -1,3 +1,9 @@
+# Every recipe here is Bourne shell. IRIX make runs recipes with $SHELL, and
+# root's login shell on IRIX is csh - which rejects `2>/dev/null` ("Ambiguous
+# output redirect") and `if [ ... ]`, so plain `make` from a root login failed
+# before this line existed (seen on an R3000 Indigo, 2026-10-01).
+SHELL = /bin/sh
+
 CC = cc
 CFLAGS =
 LDFLAGS =
@@ -15,7 +21,7 @@ TARNAME  = irixscsitb.tar
 # say) would silently become what plain `make` builds.
 default: detect
 
-.PHONY: default detect irix-o32 irix-n32 irix-gui-o32 irix-gui-n32 tar test irix-syntax gui-syntax clean FORCE
+.PHONY: default detect irix-o32 irix-n32 irix-mips1 irix-gui-o32 irix-gui-n32 irix-gui-mips1 tar test irix-syntax gui-syntax clean FORCE
 
 # Two headers, because there are two different questions with two different
 # lifecycles. Neither is committed.
@@ -73,11 +79,15 @@ detect:
 				echo "*** WARNING: GUI did not build; CLI is fine. Check libXm/libSgm."; \
 		fi; \
 	elif [ "$$OS" = "IRIX" ]; then \
-		echo "*** Compiling for IRIX (o32/mips2 - portable 5.3-6.5)"; \
-		$(MAKE) irix-o32 || exit 1; \
+		FL=o32; ISA=mips2; \
+		if hinv -c processor 2>/dev/null | grep 'R[23]000' >/dev/null; then \
+			FL=mips1; ISA=mips1; \
+		fi; \
+		echo "*** Compiling for IRIX (o32/$$ISA - portable 5.3-6.5)"; \
+		$(MAKE) irix-$$FL || exit 1; \
 		if [ -z "$$NOGUI" ]; then \
-			echo "*** Compiling the Motif GUI (o32/mips2)"; \
-			$(MAKE) irix-gui-o32 || \
+			echo "*** Compiling the Motif GUI (o32/$$ISA)"; \
+			$(MAKE) irix-gui-$$FL || \
 				echo "*** WARNING: GUI did not build; CLI is fine. Check libXm/libSgm."; \
 		fi; \
 	else \
@@ -85,12 +95,29 @@ detect:
 	fi
 
 # Explicit IRIX targets (useful when cross-building for packaging on an EFS ISO).
-# o32/mips2 produces ONE binary that runs across IRIX 5.3 through 6.5; n32/mips3
-# is faster but 6.x-only. uname reports "IRIX" on 5.3 and "IRIX64" on 6.x.
+# Three flavors, two ABIs:
+#
+#   irix-o32    o32/mips2  IRIX 5.3-6.5 on an R4000 or later (the usual one)
+#   irix-mips1  o32/mips1  IRIX 5.3-6.5 on ANY MIPS CPU, including the R3000
+#                          machines (IP12 Indigo et al.), which refuse a mips2
+#                          binary with "Program not supported by architecture"
+#   irix-n32    n32/mips3  IRIX 6.x only, faster
+#
+# mips1 is a separate flavor rather than the o32 default so that R4000-class
+# machines keep the mips2 code. uname reports "IRIX" on 5.3 and "IRIX64" on
+# 6.x; plain `make` on an R2000/R3000 picks irix-mips1 by itself (hinv).
+#
+# The flavors share object names, so switching flavors in one directory needs
+# a `make clean` first: make cannot see that CFLAGS changed.
 irix-o32:
 	$(MAKE) irixscsitb \
 		SRCS="irixscsitb.c toolbox.c wifi.c version.c irix.c" OBJS="irixscsitb.o toolbox.o wifi.o version.o irix.o" \
 		CFLAGS="-32 -mips2 -O2 -DOS_IRIX -DBUILD_O32" LDFLAGS=""
+
+irix-mips1:
+	$(MAKE) irixscsitb \
+		SRCS="irixscsitb.c toolbox.c wifi.c version.c irix.c" OBJS="irixscsitb.o toolbox.o wifi.o version.o irix.o" \
+		CFLAGS="-32 -mips1 -O2 -DOS_IRIX -DBUILD_MIPS1" LDFLAGS=""
 
 irix-n32:
 	$(MAKE) irixscsitb \
@@ -116,6 +143,11 @@ irix-gui-o32:
 	$(MAKE) scsitbgui \
 		OBJS="gui_motif.o toolbox.o wifi.o version.o irix.o" \
 		CFLAGS="-32 -mips2 -O2 -DOS_IRIX -DBUILD_O32" LDFLAGS="$(GUILIBS)"
+
+irix-gui-mips1:
+	$(MAKE) scsitbgui \
+		OBJS="gui_motif.o toolbox.o wifi.o version.o irix.o" \
+		CFLAGS="-32 -mips1 -O2 -DOS_IRIX -DBUILD_MIPS1" LDFLAGS="$(GUILIBS)"
 
 irix-gui-n32:
 	$(MAKE) scsitbgui \
@@ -174,6 +206,13 @@ test: version.h buildhost.h
 	@echo ""
 	@echo "*** mock -b must tell a toolbox-disabled ZuluSCSI how to enable it:"
 	@./tests/irixscsitb-mock -b | grep "EnableToolbox = 1"
+	@echo ""
+	@echo "*** mock -i on a BlueSCSI must accept its Toolbox API version (0) quietly:"
+	@./tests/irixscsitb-mock -v -i /dev/mock/sc0d3l0 > tests/mock-api.out 2>&1
+	@grep "^Toolbox API version: 0$$" tests/mock-api.out
+	@if grep -q "too old" tests/mock-api.out; then rm -f tests/mock-api.out; \
+		echo "FAIL: API version 0 - what every real firmware sends - flagged as too old"; exit 1; fi
+	@rm -f tests/mock-api.out
 	@echo ""
 	@echo "*** mock -i against a ZuluSCSI with EnableToolbox = 0 (must refuse, and say why):"
 	@if ./tests/irixscsitb-mock -i /dev/mock/sc0d9l0 > tests/mock-d9.out 2>&1; then \

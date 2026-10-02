@@ -137,7 +137,14 @@
  */
 #define WIFI_SCAN_TIMEOUT_SEC 20
 
-#define TOOLBOX_API_VER 1
+/*
+ * The Toolbox API version this host is written against: the byte after the
+ * firmware name at the end of INQUIRY. Both firmwares send 0 - TOOLBOX_API in
+ * BlueSCSI's src/BlueSCSI_config.h and ZuluSCSI's src/ZuluSCSI_config.h, and
+ * BlueSCSI's GET_CAPABILITIES (TOOLBOX_API_VERSION) agrees. bstoolbox expected
+ * 1, a version no firmware has ever reported, so every real board warned.
+ */
+#define TOOLBOX_API_VER 0
 
 #define MAX_FILES 100
 /* GET_FILE (0xD1) transfers the file in fixed blocks; the CDB offset field is
@@ -265,7 +272,7 @@ typedef struct {
 const char *build_revision(void);   /* git short rev, "-dirty" if modified */
 const char *build_stamp(void);      /* when the source was stamped (host) */
 const char *build_compiled(void);   /* when this object was compiled */
-const char *build_abi(void);        /* "o32 (mips2) - runs on IRIX 5.3 ..." */
+const char *build_abi(void);        /* "o32 (mips1) - runs on IRIX 5.3 ..." */
 const char *build_libs(void);       /* OS + release the binary was linked on */
 
 /*

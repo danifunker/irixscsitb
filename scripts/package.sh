@@ -6,18 +6,22 @@
 #   irixscsitb-VER.hda.gz    SGI EFS hard-disk image, gzipped (mostly empty
 #                            space compresses to almost nothing)
 #   irixscsitb-VER.tar.gz    the same tree + raw binaries, executable bits set
-#   irixscsitb-VER-53.tardist  Software Manager package (o32, 5.3 format)
-#   irixscsitb-VER-65.tardist  Software Manager package (n32, 6.5 format)
+#   irixscsitb-VER-53.tardist     Software Manager package (o32/mips2, 5.3 format)
+#   irixscsitb-VER-mips1.tardist  Software Manager package (o32/mips1, 5.3 format)
+#   irixscsitb-VER-65.tardist     Software Manager package (n32, 6.5 format)
 #
 # The raw .iso/.hda stay in --outdir next to the .gz for local use (attach
 # directly in IRIS; `gunzip` before writing to real media).
 #
 # MEDIA LAYOUT — one directory per flavor, each packaged BY ITS OWN OS
 # (iris-build.sh runs the guest's native gendist in the same session):
-#   /dist53/   inst distribution from the IRIX 5.3 guest (o32; the 5.3-format
-#              product every inst 5.3-6.5 reads):  inst -f /CDROM/dist53
-#   /dist65/   inst distribution from the IRIX 6.5 guest (n32, 6.5 format):
-#              inst -f /CDROM/dist65
+#   /dist53/     inst distribution from the IRIX 5.3 guest (o32/mips2; the
+#                5.3-format product every inst 5.3-6.5 reads, R4000 and up):
+#                inst -f /CDROM/dist53
+#   /distmips1/  the same, built o32/mips1 for ANY MIPS CPU incl. the R3000:
+#                inst -f /CDROM/distmips1
+#   /dist65/     inst distribution from the IRIX 6.5 guest (n32, 6.5 format):
+#                inst -f /CDROM/dist65
 #   /README-dist.txt  generated: which directory is which
 # When a flavor has no inst product (guest without the Software Packager),
 # its raw binaries take the directory's place instead — copy off + chmod +x.
@@ -27,9 +31,12 @@
 #
 # Options (defaults in brackets):
 #   --inst53-dir DIR  o32 product trio (irixscsitb, .idb, .sw) -> /dist53
+#   --instmips1-dir DIR  mips1 product trio -> /distmips1
 #   --inst65-dir DIR  n32 product trio -> /dist65
 #   --bin53 PATH      o32 CLI: tarball bin53/ (+ /dist53 fallback w/o inst)
 #   --gui53 PATH      o32 GUI: tarball bin53/ (+ fallback)
+#   --binmips1 PATH   mips1 CLI: tarball binmips1/ (+ /distmips1 fallback)
+#   --guimips1 PATH   mips1 GUI: tarball binmips1/ (+ fallback)
 #   --bin65 PATH      n32 CLI: tarball bin65/ (+ /dist65 fallback w/o inst)
 #   --gui65 PATH      n32 GUI: tarball bin65/ (+ fallback)
 #   --version VER     version string used in output filenames (required)
@@ -47,12 +54,12 @@
 #   --no-gzip         skip gzipping the .iso/.hda
 set -eu
 
-BIN53=""
-GUI53=""
-BIN65=""
-GUI65=""
-INST53=""
-INST65=""
+# Per-flavor inputs, keyed by the dist key (scripts/ci-lib.sh): BIN<key>,
+# GUI<key>, INST<key>. KEYS is also the order on the media.
+KEYS="53 mips1 65"
+BIN53=""; GUI53=""; INST53=""
+BINmips1=""; GUImips1=""; INSTmips1=""
+BIN65=""; GUI65=""; INST65=""
 VERSION=""
 OUTDIR="dist"
 RB="${RB_CLI:-rb-cli}"
@@ -73,8 +80,11 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 		--inst53-dir) INST53="$2"; shift 2 ;;
 		--inst65-dir) INST65="$2"; shift 2 ;;
+		--instmips1-dir) INSTmips1="$2"; shift 2 ;;
 		--bin53)    BIN53="$2"; shift 2 ;;
 		--gui53)    GUI53="$2"; shift 2 ;;
+		--binmips1) BINmips1="$2"; shift 2 ;;
+		--guimips1) GUImips1="$2"; shift 2 ;;
 		--bin65)    BIN65="$2"; shift 2 ;;
 		--gui65)    GUI65="$2"; shift 2 ;;
 		--version)  VERSION="$2"; shift 2 ;;
@@ -90,22 +100,44 @@ while [ $# -gt 0 ]; do
 		--no-hda)   DO_HDA=0; shift ;;
 		--no-tar)   DO_TAR=0; shift ;;
 		--no-gzip)  DO_GZIP=0; shift ;;
-		-h|--help)  sed -n '2,52p' "$0"; exit 0 ;;
+		-h|--help)  sed -n '2,60p' "$0"; exit 0 ;;
 		*)          die "unknown option: $1" ;;
 	esac
 done
 
+# key_get VAR KEY — the value of ${VAR}${KEY} (BIN53, INSTmips1, ...).
+key_get() { eval "printf %s \"\${$1$2}\""; }
+
 [ -n "$VERSION" ] || die "missing --version"
-for f in "$BIN53" "$GUI53" "$BIN65" "$GUI65"; do
-	[ -z "$f" ] || [ -f "$f" ] || die "not found: $f"
-done
-for d in "$INST53" "$INST65"; do
+ANY=""
+for k in $KEYS; do
+	for f in "$(key_get BIN "$k")" "$(key_get GUI "$k")"; do
+		[ -z "$f" ] || [ -f "$f" ] || die "not found: $f"
+	done
+	d=$(key_get INST "$k")
+	ANY="$ANY$d$(key_get BIN "$k")"
 	[ -z "$d" ] && continue
 	for f in irixscsitb irixscsitb.idb irixscsitb.sw; do
 		[ -f "$d/$f" ] || die "inst dir $d is missing $f (iris-build.sh emits it unless --no-gendist)"
 	done
 done
-[ -n "$INST53$BIN53$INST65$BIN65" ] || die "nothing to package: pass --inst53-dir/--bin53 and/or --inst65-dir/--bin65"
+[ -n "$ANY" ] || die "nothing to package: pass --inst<key>-dir and/or --bin<key> for at least one of: $KEYS"
+
+# key_runs_on / key_build KEY — the README-dist lines for that directory.
+key_runs_on() {
+	case "$1" in
+		53)    echo "IRIX 5.3-6.5 on an R4000 or later" ;;
+		mips1) echo "IRIX 5.3-6.5 on ANY MIPS CPU, incl. the R2000/R3000" ;;
+		65)    echo "IRIX 6.x only (fastest)" ;;
+	esac
+}
+key_build() {
+	case "$1" in
+		53)    echo "o32 ABI, MIPS II - compiled and packaged on IRIX 5.3" ;;
+		mips1) echo "o32 ABI, MIPS I - compiled and packaged on IRIX 5.3" ;;
+		65)    echo "n32 ABI, MIPS III - compiled and packaged on IRIX 6.5" ;;
+	esac
+}
 
 # Fail early (and clearly) if this rb-cli predates the current builder grammar.
 command -v "$RB" >/dev/null 2>&1 || [ -x "$RB" ] || die "rb-cli not found: $RB"
@@ -131,46 +163,49 @@ README_DIST="$OUTDIR/.README-dist.$$"
 {
 	echo "irixscsitb $VERSION - toolbox for BlueSCSI / ZuluSCSI on SGI IRIX"
 	echo ""
-	if [ -n "$INST53" ]; then
-		echo "dist53/   Software Manager distribution, built and packaged ON"
-		echo "          IRIX 5.3 (o32 - runs on 5.3 through 6.5):"
-		echo "              inst -f /CDROM/dist53     (or swmgr)"
-	elif [ -n "$BIN53" ]; then
-		echo "dist53/   o32 binaries (run on IRIX 5.3-6.5): copy off + chmod +x"
-	fi
-	if [ -n "$INST65" ]; then
-		echo "dist65/   Software Manager distribution, built and packaged ON"
-		echo "          IRIX 6.5 (n32 - IRIX 6.x only, faster):"
-		echo "              inst -f /CDROM/dist65     (or swmgr)"
-	elif [ -n "$BIN65" ]; then
-		echo "dist65/   n32 binaries (IRIX 6.x only): copy off + chmod +x"
-	fi
+	for k in $KEYS; do
+		if [ -n "$(key_get INST "$k")" ]; then
+			_how="inst -f /CDROM/dist$k   (or swmgr)"
+		elif [ -n "$(key_get BIN "$k")" ]; then
+			_how="raw binaries: copy off + chmod +x"
+		else
+			continue
+		fi
+		echo "dist$k/"
+		echo "    runs on:  $(key_runs_on "$k")"
+		echo "    build:    $(key_build "$k")"
+		echo "    install:  $_how"
+		echo ""
+	done
+	echo "Which one? An R2000/R3000 machine (IP12 Indigo and other early"
+	echo "systems; 'hinv' prints the CPU) needs distmips1 - it cannot run the"
+	echo "others. Any other machine on IRIX 5.3-6.5 takes dist53, and IRIX 6.x"
+	echo "may take dist65 instead."
 	echo ""
 	echo "Each product installs /usr/sbin/irixscsitb (CLI) and, where the"
-	echo "build had Motif, /usr/sbin/scsitbgui (GUI). Installing the other"
+	echo "build had Motif, /usr/sbin/scsitbgui (GUI). Installing another"
 	echo "flavor's product later simply replaces it."
 } > "$README_DIST"
 
 PAYLOAD=""
 add_payload() { PAYLOAD="$PAYLOAD$1|$2
 "; }
-# dist53: the inst product, or raw binaries when no product was generated.
-if [ -n "$INST53" ]; then
-	for f in irixscsitb irixscsitb.idb irixscsitb.sw; do
-		add_payload "$INST53/$f" "/dist53/$f"
-	done
-elif [ -n "$BIN53" ]; then
-	add_payload "$BIN53" "/dist53/irixscsitb"
-	[ -z "$GUI53" ] || add_payload "$GUI53" "/dist53/scsitbgui"
-fi
-if [ -n "$INST65" ]; then
-	for f in irixscsitb irixscsitb.idb irixscsitb.sw; do
-		add_payload "$INST65/$f" "/dist65/$f"
-	done
-elif [ -n "$BIN65" ]; then
-	add_payload "$BIN65" "/dist65/irixscsitb"
-	[ -z "$GUI65" ] || add_payload "$GUI65" "/dist65/scsitbgui"
-fi
+# dist<key>: the inst product, or raw binaries when no product was generated.
+DIRS=""
+for k in $KEYS; do
+	inst=$(key_get INST "$k"); bin=$(key_get BIN "$k"); gui=$(key_get GUI "$k")
+	if [ -n "$inst" ]; then
+		for f in irixscsitb irixscsitb.idb irixscsitb.sw; do
+			add_payload "$inst/$f" "/dist$k/$f"
+		done
+	elif [ -n "$bin" ]; then
+		add_payload "$bin" "/dist$k/irixscsitb"
+		[ -z "$gui" ] || add_payload "$gui" "/dist$k/scsitbgui"
+	else
+		continue
+	fi
+	DIRS="$DIRS /dist$k"
+done
 add_payload "$README_DIST" "/README-dist.txt"
 for f in $EXTRAS; do
 	add_payload "$f" "/$(basename "$f")"
@@ -181,8 +216,9 @@ done
 # (slot 7) and the HDD (slot 0) — rb-cli maps @1 to the sole EFS partition.
 put_payload() {
 	ref="$1"
-	[ -z "$INST53$BIN53" ] || "$RB" mkdir "$ref" /dist53
-	[ -z "$INST65$BIN65" ] || "$RB" mkdir "$ref" /dist65
+	for d in $DIRS; do
+		"$RB" mkdir "$ref" "$d"
+	done
 	printf '%s' "$PAYLOAD" | while IFS='|' read -r host guest; do
 		[ -n "$host" ] || continue
 		"$RB" put "$ref" "$host" "$guest"
@@ -238,13 +274,14 @@ if [ "$DO_TAR" = 1 ]; then
 		cp "$host" "$stage/$dest"
 	done
 	# ...plus the raw binaries with executable bits, for NFS/direct-copy use.
-	for pair in "bin53:$BIN53" "bin53:$GUI53" "bin65:$BIN65" "bin65:$GUI65"; do
-		d=${pair%%:*}; src=${pair#*:}
-		[ -n "$src" ] || continue
-		mkdir -p "$stage/$top/$d"
-		case "$src" in *scsitbgui*) n=scsitbgui ;; *) n=irixscsitb ;; esac
-		cp "$src" "$stage/$top/$d/$n"
-		chmod +x "$stage/$top/$d/$n"
+	for k in $KEYS; do
+		for pair in "irixscsitb:$(key_get BIN "$k")" "scsitbgui:$(key_get GUI "$k")"; do
+			n=${pair%%:*}; src=${pair#*:}
+			[ -n "$src" ] || continue
+			mkdir -p "$stage/$top/bin$k"
+			cp "$src" "$stage/$top/bin$k/$n"
+			chmod +x "$stage/$top/bin$k/$n"
+		done
 	done
 	tar czf "$TARBALL" -C "$stage" "$top"
 	rm -rf "$stage"
@@ -253,14 +290,12 @@ fi
 
 # Per-flavor tardists: a plain tar of the product trio — the classic
 # "download and open with Software Manager" vector.
-if [ -n "$INST53" ]; then
-	echo ">>> tardist (o32/5.3): $OUTDIR/irixscsitb-$VERSION-53.tardist"
-	( cd "$INST53" && tar cf "$OUTDIR/irixscsitb-$VERSION-53.tardist" irixscsitb irixscsitb.idb irixscsitb.sw )
-fi
-if [ -n "$INST65" ]; then
-	echo ">>> tardist (n32/6.5): $OUTDIR/irixscsitb-$VERSION-65.tardist"
-	( cd "$INST65" && tar cf "$OUTDIR/irixscsitb-$VERSION-65.tardist" irixscsitb irixscsitb.idb irixscsitb.sw )
-fi
+for k in $KEYS; do
+	inst=$(key_get INST "$k")
+	[ -n "$inst" ] || continue
+	echo ">>> tardist ($k): $OUTDIR/irixscsitb-$VERSION-$k.tardist"
+	( cd "$inst" && tar cf "$OUTDIR/irixscsitb-$VERSION-$k.tardist" irixscsitb irixscsitb.idb irixscsitb.sw )
+done
 
 # Distribution compression: the images are mostly empty space. The raw files
 # stay for direct local use (IRIS attaches them as-is).

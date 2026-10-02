@@ -67,12 +67,19 @@ of) the INQUIRY `IRIS EMUL DISK` identity.
 ```c
 additional_len     = buf[4];
 toolbox_api_version = buf[additional_len + 4];   /* last valid byte */
-if (toolbox_api_version < BLUESCSI_TOOLBOX_API_VER /*=1*/) { warn; /* no fail */ }
+if (toolbox_api_version < TOOLBOX_API_VER /*=0*/) { warn; /* no fail */ }
 ```
 
-Real firmware returns `0` (`< 1`), so the host warns and continues — never a
-failure. For a plain SGI INQUIRY (IRIS) this byte is just whatever lands at that
-offset; harmless.
+The firmware appends this byte straight after its name (`out[size++] =
+TOOLBOX_API` in `inquiry.c`), and **both firmwares send `0`**: `TOOLBOX_API` is
+`0` in BlueSCSI's `src/BlueSCSI_config.h` (since it was introduced in 2024) and
+in ZuluSCSI's `src/ZuluSCSI_config.h`, and BlueSCSI's `0xD9` GET_CAPABILITIES
+reports the same `TOOLBOX_API_VERSION 0`. `TOOLBOX_API_VER` is therefore `0`.
+bstoolbox expected `1`, a version no firmware has reported, so every real board
+printed "Toolbox API version 0 too old" — seen on an R3000 Indigo with a
+BlueSCSI v2 (2026-10-01); the mock bus now sends the real byte and `make test`
+asserts the warning stays quiet. It is never a failure either way. For a plain
+SGI INQUIRY (IRIS) this byte is just whatever lands at that offset; harmless.
 
 ### 1d. `0xD9` device-type map (non-fatal)
 

@@ -2,17 +2,17 @@
 # Build, package, and publish a GitHub release entirely from THIS machine —
 # the local twin of .github/workflows/release.yml, for setups where the boot
 # disks can't (or shouldn't) be hosted anywhere a CI runner could fetch them:
-# both native builds run in the IRIS emulator here, then `gh release create`
+# all three native builds run in the IRIS emulator here, then `gh release create`
 # uploads exactly the artifact set the Actions pipeline would have.
 #
 # What it runs, in order — every step is the SAME script the GitHub Actions
 # workflow runs, so the two paths cannot drift:
 #   1. preflight    git tree clean (release maps to a commit), HEAD pushed,
 #                   gh authenticated; fetch-image.sh --check-only per flavor
-#   2. o32 build    fetch-image.sh + iris-build.sh --flavor o32  (5.3 guest)
-#   3. n32 build    fetch-image.sh + iris-build.sh --flavor n32  (6.5 guest)
-#   4. package      scripts/package-dist.sh -> .iso / .hda / .tar.gz
-#   5. release      scripts/publish-release.sh (gh release create)
+#   2. builds       fetch-image.sh + iris-build.sh, once per enabled flavor:
+#                   o32 (5.3 guest), mips1 (5.3 guest), n32 (6.5 guest)
+#   3. package      scripts/package-dist.sh -> .iso / .hda / .tar.gz
+#   4. release      scripts/publish-release.sh (gh release create)
 #
 # Boot disks come from ci/local.conf, $IRIX53_IMAGE/$IRIX65_IMAGE, or
 # even a $IRIX53_DISK_URL/$IRIX65_DISK_URL download — the same resolution the
@@ -21,24 +21,24 @@
 #
 # Usage:
 #   scripts/release-local.sh [--version V] [--draft] [--dry-run]
-#                            [--skip-o32] [--skip-n32] [--allow-dirty]
+#                            [--skip-o32] [--skip-mips1] [--skip-n32]
+#                            [--allow-dirty]
 #                            [--outdir DIR] [--iris-dir DIR] [--rb-cli PATH]
 #
 #   --version V    release version [UTC date stamp, e.g. 2026-07-28-15-04]
 #   --draft        create the GitHub release as a draft
 #   --dry-run      build + package, then PRINT the gh command instead of
 #                  publishing (also skips the git-pushed preflight)
-#   --skip-o32     skip the 5.3/o32 build (the images then carry n32 — note
-#                  that binary is 6.x-only)
-#   --skip-n32     release with the o32 pair only (no 6.5 image available);
-#                  the .iso/.hda always carry o32 anyway
+#   --skip-o32     skip the 5.3 o32/mips2 build
+#   --skip-mips1   skip the 5.3 o32/mips1 build (nothing then runs on an R3000)
+#   --skip-n32     skip the 6.5 n32 build (no 6.5 image available)
 #   --skip-inst    skip the Software Manager products (passes --no-gendist to
 #                  the builds; BUILD_INST=0 in ci/local.conf disables durably)
 #   --allow-dirty  permit uncommitted changes (binaries stamp <rev>-dirty)
 #
-# A flavor can also be switched off durably with BUILD_O32=0 / BUILD_N32=0 in
-# ci/local.conf (or the environment) — same knobs the workflow exposes as the
-# build_o32/build_n32 dispatch inputs and BUILD_O32/BUILD_N32 repo variables.
+# A flavor can also be switched off durably with BUILD_O32=0 / BUILD_MIPS1=0 /
+# BUILD_N32=0 in ci/local.conf (or the environment) — same knobs the workflow
+# exposes as the build_* dispatch inputs and BUILD_* repo variables.
 set -eu
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -46,8 +46,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 VERSION=""
 DRAFT=0
 DRYRUN=0
-SKIP_O32=0
-SKIP_N32=0
+SKIP=""                         # flavors named by --skip-<flavor>
 SKIP_INST=0
 ALLOW_DIRTY=0
 OUTDIR=""
@@ -61,31 +60,33 @@ while [ $# -gt 0 ]; do
 		--version)     VERSION="$2"; shift 2 ;;
 		--draft)       DRAFT=1; shift ;;
 		--dry-run)     DRYRUN=1; shift ;;
-		--skip-o32)    SKIP_O32=1; shift ;;
-		--skip-n32)    SKIP_N32=1; shift ;;
+		--skip-o32)    SKIP="$SKIP o32"; shift ;;
+		--skip-mips1)  SKIP="$SKIP mips1"; shift ;;
+		--skip-n32)    SKIP="$SKIP n32"; shift ;;
 		--skip-inst)   SKIP_INST=1; shift ;;
 		--allow-dirty) ALLOW_DIRTY=1; shift ;;
 		--outdir)      OUTDIR="$2"; shift 2 ;;
 		--iris-dir)    IRIS_DIR_ARG="$2"; shift 2 ;;
 		--rb-cli)      RB="$2"; shift 2 ;;
-		-h|--help)     sed -n '2,38p' "$0"; exit 0 ;;
+		-h|--help)     sed -n '2,39p' "$0"; exit 0 ;;
 		*)             die "unknown option: $1" ;;
 	esac
 done
 
 load_local_conf   # ci/local.conf fills in whatever flags/env didn't set
 
-# Which flavors run: --skip-* flags > BUILD_O32/BUILD_N32 (env or conf).
-DO_O32=1; DO_N32=1
-[ "$SKIP_O32" = 1 ] && DO_O32=0
-[ "$SKIP_N32" = 1 ] && DO_N32=0
-if [ "$DO_O32" = 1 ] && ! flavor_enabled o32; then
-	echo "release-local: o32 disabled (BUILD_O32 is off)"; DO_O32=0
-fi
-if [ "$DO_N32" = 1 ] && ! flavor_enabled n32; then
-	echo "release-local: n32 disabled (BUILD_N32 is off)"; DO_N32=0
-fi
-[ "$DO_O32" = 1 ] || [ "$DO_N32" = 1 ] || die "nothing to build — both flavors are disabled"
+# Which flavors run: --skip-* flags > BUILD_O32/BUILD_MIPS1/BUILD_N32 (env or
+# conf). DO is the enabled subset of $FLAVORS, in table order.
+DO=""
+for fl in $FLAVORS; do
+	case " $SKIP " in *" $fl "*) echo "release-local: $fl skipped (--skip-$fl)"; continue ;; esac
+	if ! flavor_enabled "$fl"; then
+		echo "release-local: $fl disabled (BUILD_$(echo "$fl" | tr a-z A-Z) is off)"
+		continue
+	fi
+	DO="$DO $fl"
+done
+[ -n "$DO" ] || die "nothing to build — every flavor is disabled"
 
 # Software Manager products: each guest packages its OWN build with its own
 # gendist inside the build session (iris-build.sh). --skip-inst is folded into
@@ -102,14 +103,15 @@ inst_enabled || GD_ARG="--no-gendist"
 TAG="v$VERSION"
 
 # ---- 1. preflight ------------------------------------------------------------
-echo "==> [1/5] preflight"
+echo "==> [1/4] preflight (flavors:$DO)"
 command -v gh >/dev/null 2>&1 || die "gh not found — needed to create the release"
 # Same provisioning path as the Actions jobs: explicit choice > PATH >
 # release download (ensure-rbcli.sh).
 if [ -n "$RB" ]; then RB_CLI="$RB"; export RB_CLI; fi
 RB=$("$REPO/scripts/ensure-rbcli.sh")
-[ "$DO_O32" = 0 ] || "$REPO/scripts/fetch-image.sh" --flavor o32 --check-only
-[ "$DO_N32" = 0 ] || "$REPO/scripts/fetch-image.sh" --flavor n32 --check-only
+for fl in $DO; do
+	"$REPO/scripts/fetch-image.sh" --flavor "$fl" --check-only
+done
 
 cd "$REPO"
 if [ "$ALLOW_DIRTY" = 0 ] && [ -n "$(git status --porcelain)" ]; then
@@ -136,38 +138,28 @@ IRIS_ARGS=""
 mkdir -p "$OUTDIR"
 OUTDIR=$(cd "$OUTDIR" && pwd)
 
-# ---- 2 + 3. native builds ------------------------------------------------------
+# ---- 2. native builds ------------------------------------------------------------
 # Sequential on purpose: two emulator instances would fight for CPU and the
 # combined wall time barely differs. fetch-image resolves a local path (conf/
 # env) or downloads from a *_DISK_URL — identical to the Actions build jobs.
-if [ "$DO_O32" = 1 ]; then
-	echo "==> [2/5] native o32 build + packaging (IRIX 5.3 guest)"
-	IMG=$("$REPO/scripts/fetch-image.sh" --flavor o32 --dest "$OUTDIR/guest-disk-o32.chd")
+# The download lands per GUEST, so o32 and mips1 share one 5.3 disk.
+for fl in $DO; do
+	guest=$(flavor_guest "$fl")
+	echo "==> [2/4] native $fl build + packaging (IRIX $(echo "$guest" | sed 's/./&./') guest)"
+	IMG=$("$REPO/scripts/fetch-image.sh" --flavor "$fl" --dest "$OUTDIR/guest-disk-$guest.chd")
 	# shellcheck disable=SC2086 # IRIS_ARGS/GD_ARG are deliberately word-split
-	"$REPO/scripts/iris-build.sh" --flavor o32 --image "$IMG" $IRIS_ARGS $GD_ARG \
+	"$REPO/scripts/iris-build.sh" --flavor "$fl" --image "$IMG" $IRIS_ARGS $GD_ARG \
 		--rb-cli "$RB" --version "$VERSION" --no-package --fresh --outdir "$OUTDIR"
-else
-	echo "==> [2/5] o32 build skipped"
-fi
+done
 
-if [ "$DO_N32" = 1 ]; then
-	echo "==> [3/5] native n32 build + packaging (IRIX 6.5 guest)"
-	IMG=$("$REPO/scripts/fetch-image.sh" --flavor n32 --dest "$OUTDIR/guest-disk-n32.chd")
-	# shellcheck disable=SC2086
-	"$REPO/scripts/iris-build.sh" --flavor n32 --image "$IMG" $IRIS_ARGS $GD_ARG \
-		--rb-cli "$RB" --version "$VERSION" --no-package --fresh --outdir "$OUTDIR"
-else
-	echo "==> [3/5] n32 build skipped"
-fi
-
-# ---- 4. package -----------------------------------------------------------------
-echo "==> [4/5] packaging media (.iso/.hda + gz, .tar.gz, .tardists)"
+# ---- 3. package -----------------------------------------------------------------
+echo "==> [3/4] packaging media (.iso/.hda + gz, .tar.gz, .tardists)"
 "$REPO/scripts/package-dist.sh" --version "$VERSION" --dir "$OUTDIR" --rb-cli "$RB"
 
-# ---- 5. release ------------------------------------------------------------------
+# ---- 4. release ------------------------------------------------------------------
 # publish-release.sh is the same script the Actions release job runs, so the
 # notes text and artifact set cannot drift between the two paths.
-echo "==> [5/5] publishing $TAG"
+echo "==> [4/4] publishing $TAG"
 set -- --version "$VERSION" --dist "$OUTDIR"
 [ "$DRAFT" = 0 ]  || set -- "$@" --draft
 [ "$DRYRUN" = 0 ] || set -- "$@" --dry-run

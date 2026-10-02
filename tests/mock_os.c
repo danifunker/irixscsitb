@@ -160,8 +160,12 @@ static void fill_inq(unsigned char *buf, int len, unsigned char pdt,
 	memcpy(buf + 8,  v, strlen(v));
 	memcpy(buf + 16, p, strlen(p));
 	memcpy(buf + 32, r, strlen(r));
+	/* Firmware name, then the Toolbox API version byte - inquiry.c does
+	 * "out[size++] = TOOLBOX_API", and both BlueSCSI and ZuluSCSI define
+	 * TOOLBOX_API as 0. Leaving it as padding made it read 0x20. */
 	if (tail != NULL && len > 36 + (int)strlen(tail)) {
 		memcpy(buf + 36, tail, strlen(tail));
+		buf[36 + strlen(tail)] = 0;
 		buf[4] = (unsigned char)(0x1f + strlen(tail) + 1);
 	}
 }

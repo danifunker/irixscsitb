@@ -3,9 +3,24 @@
 # executed; the caller sets $REPO first and keeps its own die() (so error
 # prefixes name the script the user actually ran).
 #
-# The flavor <-> configuration mapping lives here and nowhere else:
-#   o32 -> IRIX53_IMAGE (local path) / IRIX53_DISK_URL (download) / BUILD_O32
-#   n32 -> IRIX65_IMAGE              / IRIX65_DISK_URL             / BUILD_N32
+# The flavor table lives here and nowhere else:
+#
+#   flavor  ISA    guest  dist key  runs on                    switch
+#   o32     mips2  5.3    53        IRIX 5.3-6.5, R4000 and up  BUILD_O32
+#   mips1   mips1  5.3    mips1     IRIX 5.3-6.5, ANY MIPS CPU  BUILD_MIPS1
+#                                   (the R3000 machines - IP12 Indigo et al.)
+#   n32     mips3  6.5    65        IRIX 6.x                    BUILD_N32
+#
+# The guest picks the boot disk (5.3 -> IRIX53_IMAGE / IRIX53_DISK_URL, 6.5 ->
+# IRIX65_*), so o32 and mips1 build from the same image. The dist key names
+# everything the flavor produces downstream: <outdir>/inst<key>/ (gendist
+# product), /dist<key>/ on the media, bin<key>/ in the tarball and
+# irixscsitb-<version>-<key>.tardist.
+#
+# mips1 is its own flavor rather than the o32 build lowered to MIPS I, so the
+# machines that can run mips2 keep the better code: an R3000 refuses a mips2
+# ELF outright ("Program not supported by architecture").
+FLAVORS="o32 mips1 n32"
 
 CONF="${REPO:?ci-lib.sh: caller must set REPO}/ci/local.conf"
 
@@ -24,7 +39,7 @@ conf_get() {
 load_local_conf() {
 	for _k in IRIX53_IMAGE IRIX65_IMAGE IRIX53_DISK_URL IRIX65_DISK_URL \
 	          IRIS_DIR IRIS_RELEASE_REPO IRIS_TAG RB_CLI BUILD_O32 BUILD_N32 \
-	          BUILD_INST IRIX53_IDO_ISO; do
+	          BUILD_MIPS1 BUILD_INST IRIX53_IDO_ISO; do
 		_cur=$(eval "printf %s \"\${$_k:-}\"")
 		[ -n "$_cur" ] && continue
 		_v=$(conf_get "$_k")
@@ -34,19 +49,44 @@ load_local_conf() {
 	done
 }
 
-flavor_img_key() {
+# flavor_guest FLAVOR — which IRIX release builds (and packages) it: 53 | 65.
+flavor_guest() {
 	case "$1" in
-		o32) echo IRIX53_IMAGE ;;
-		n32) echo IRIX65_IMAGE ;;
-		*)   return 1 ;;
+		o32|mips1) echo 53 ;;
+		n32)       echo 65 ;;
+		*)         return 1 ;;
 	esac
 }
 
-flavor_url_key() {
+# flavor_dist_key FLAVOR — the suffix of everything the flavor ships as
+# (inst<key>/, /dist<key>, bin<key>/, -<key>.tardist).
+flavor_dist_key() {
 	case "$1" in
-		o32) echo IRIX53_DISK_URL ;;
-		n32) echo IRIX65_DISK_URL ;;
-		*)   return 1 ;;
+		o32)   echo 53 ;;
+		mips1) echo mips1 ;;
+		n32)   echo 65 ;;
+		*)     return 1 ;;
+	esac
+}
+
+flavor_img_key() {
+	_g=$(flavor_guest "$1") || return 1
+	echo "IRIX${_g}_IMAGE"
+}
+
+flavor_url_key() {
+	_g=$(flavor_guest "$1") || return 1
+	echo "IRIX${_g}_DISK_URL"
+}
+
+# flavor_abi_desc FLAVOR — one line for humans: the inst subsystem id and the
+# media README both use it.
+flavor_abi_desc() {
+	case "$1" in
+		o32)   echo "o32/mips2, IRIX 5.3-6.5, R4000 and up" ;;
+		mips1) echo "o32/mips1, IRIX 5.3-6.5, any CPU incl. R3000" ;;
+		n32)   echo "n32/mips3, IRIX 6.x only" ;;
+		*)     return 1 ;;
 	esac
 }
 
@@ -75,13 +115,14 @@ switch_on() {
 	esac
 }
 
-# flavor_enabled FLAVOR — BUILD_O32 / BUILD_N32 switches; enabled unless the
-# value reads as an explicit "off" (0/no/false/off, any case).
+# flavor_enabled FLAVOR — BUILD_O32 / BUILD_MIPS1 / BUILD_N32 switches;
+# enabled unless the value reads as an explicit "off" (0/no/false/off, any case).
 flavor_enabled() {
 	case "$1" in
-		o32) _e="${BUILD_O32:-1}" ;;
-		n32) _e="${BUILD_N32:-1}" ;;
-		*)   return 1 ;;
+		o32)   _e="${BUILD_O32:-1}" ;;
+		mips1) _e="${BUILD_MIPS1:-1}" ;;
+		n32)   _e="${BUILD_N32:-1}" ;;
+		*)     return 1 ;;
 	esac
 	switch_on "$_e"
 }
@@ -97,17 +138,14 @@ inst_enabled() { switch_on "${BUILD_INST:-1}"; }
 # stage_inst_inputs FLAVOR DISTVER DESTDIR — write the version-stamped,
 # flavor-specific inst product description (irixscsitb.spec + .idb) into
 # DESTDIR. One subsystem per product: each OS packages ITS OWN build with its
-# OWN gendist, so the o32 product ships in dist53/ (5.3 format, readable
-# 5.3-6.5) and the n32 product in dist65/ (6.5 format). idb sources point at
-# bin/ under the gendist -sbase.
+# OWN gendist, so the o32 and mips1 products ship in dist53/ and distmips1/
+# (5.3 format, readable 5.3-6.5) and the n32 product in dist65/ (6.5 format).
+# All three are the same product name, so installing one replaces another.
+# idb sources point at bin/ under the gendist -sbase.
 stage_inst_inputs() {
 	_fl="$1"; _dv="$2"; _dst="$3"
-	case "$_fl" in
-		o32) _abi="o32, runs on IRIX 5.3-6.5" ;;
-		n32) _abi="n32, IRIX 6.x only, faster" ;;
-		*)   return 1 ;;
-	esac
-	sed -e "s/@VERSION@/$_dv/" -e "s/@SUBSYS@/$_fl/" -e "s/@ABI_DESC@/$_abi/" \
+	_abi=$(flavor_abi_desc "$_fl") || return 1
+	sed -e "s/@VERSION@/$_dv/" -e "s/@SUBSYS@/$_fl/" -e "s|@ABI_DESC@|$_abi|" \
 		"${REPO}/inst/irixscsitb.spec" > "$_dst/irixscsitb.spec"
 	sed -e "s/@SUBSYS@/$_fl/" \
 		"${REPO}/inst/irixscsitb.idb" > "$_dst/irixscsitb.idb"

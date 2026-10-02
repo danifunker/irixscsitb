@@ -5,13 +5,14 @@
 # add the flag" dance used to live in both).
 #
 # Expects in --dir (produced by iris-build.sh --outdir / downloaded artifacts):
-#   irixscsitb-o32 / scsitbgui-o32   raw o32 binaries (tarball bin53/)
-#   irixscsitb-n32 / scsitbgui-n32   raw n32 binaries (tarball bin65/)
-#   inst53/ / inst65/                per-OS gendist product trios -> media
-#                                    /dist53 + /dist65 and the .tardists
-# Writes irixscsitb-<version>.{iso,hda,tar.gz,iso.gz,hda.gz,-53.tardist,
-# -65.tardist} into the same directory. A wholly absent flavor is simply
-# omitted; at least one flavor is required.
+#   irixscsitb-<flavor> / scsitbgui-<flavor>   raw binaries, flavor = o32 |
+#                                    mips1 | n32 (tarball bin<key>/)
+#   inst<key>/                       per-OS gendist product trios -> media
+#                                    /dist<key> and the .tardists
+# where <key> is the flavor's dist key from scripts/ci-lib.sh: 53 (o32),
+# mips1 (mips1), 65 (n32). Writes irixscsitb-<version>.{iso,hda,tar.gz,
+# iso.gz,hda.gz} and -<key>.tardist into the same directory. A wholly absent
+# flavor is simply omitted; at least one flavor is required.
 #
 # A flavor with binaries but NO inst product can still be packaged — its raw
 # binaries take the /distXX directory's place — but that is a real downgrade
@@ -27,7 +28,7 @@
 set -eu
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-. "$REPO/scripts/ci-lib.sh"        # inst_enabled (BUILD_INST) + conf loading
+. "$REPO/scripts/ci-lib.sh"        # flavor table, inst_enabled, conf loading
 VERSION=""
 DIR=""
 RB="${RB_CLI:-rb-cli}"
@@ -49,22 +50,25 @@ load_local_conf
 [ -n "$DIR" ] || die "missing --dir"
 DIR=$(cd "$DIR" 2>/dev/null && pwd) || die "dist dir not found: $DIR"
 
-# Every medium carries a dist53/ (o32) and/or dist65/ (n32) entry —
-# whichever flavors were actually built.
-[ -f "$DIR/irixscsitb-o32" ] || [ -f "$DIR/irixscsitb-n32" ] \
-	|| die "no irixscsitb-o32 or irixscsitb-n32 in $DIR — nothing to package"
+# Every medium carries a dist<key>/ entry per flavor actually built.
+BUILT=""
+for _fl in $FLAVORS; do
+	[ -f "$DIR/irixscsitb-$_fl" ] && BUILT="$BUILT $_fl"
+done
+[ -n "$BUILT" ] || die "no irixscsitb-{$(echo $FLAVORS | tr ' ' ,)} in $DIR — nothing to package"
 [ -f "$DIR/irixscsitb-o32" ] \
-	|| echo "package-dist: NOTE: no o32 build — the media get dist65/ only, and those binaries run on IRIX 6.x ONLY" >&2
+	|| echo "package-dist: NOTE: no o32 build — the media carry no mips2 build for IRIX 5.3-6.5 (built:$BUILT)" >&2
+[ -f "$DIR/irixscsitb-mips1" ] \
+	|| echo "package-dist: NOTE: no mips1 build — nothing on the media runs on an R3000 (built:$BUILT)" >&2
 
 # Every flavor that was BUILT must also have been PACKAGED by its own guest,
 # unless the products were switched off on purpose. iris-build.sh writes the
-# trio to <dir>/inst53 (o32) or <dir>/inst65 (n32); if it is not here, either
-# the guest lacked gendist or something between the build and this directory
-# lost it (in Actions: the build job's artifact upload).
+# trio to <dir>/inst<key>; if it is not here, either the guest lacked gendist
+# or something between the build and this directory lost it (in Actions: the
+# build job's artifact upload).
 if inst_enabled; then
-	for _f in o32:53 n32:65; do
-		_fl=${_f%%:*}; _d=${_f#*:}
-		[ -f "$DIR/irixscsitb-$_fl" ] || continue
+	for _fl in $BUILT; do
+		_d=$(flavor_dist_key "$_fl")
 		[ -f "$DIR/inst$_d/irixscsitb.sw" ] && continue
 		die "the $_fl build has no Software Manager product ($DIR/inst$_d/irixscsitb.sw).
   Without it the media carry raw binaries instead of an installable
@@ -76,13 +80,14 @@ if inst_enabled; then
 fi
 
 set -- --version "$VERSION" --outdir "$DIR" --rb-cli "$RB" --extra "$REPO/README.md"
-[ -f "$DIR/irixscsitb-o32" ] && set -- "$@" --bin53 "$DIR/irixscsitb-o32"
-[ -f "$DIR/scsitbgui-o32" ]  && set -- "$@" --gui53 "$DIR/scsitbgui-o32"
-[ -f "$DIR/irixscsitb-n32" ] && set -- "$@" --bin65 "$DIR/irixscsitb-n32"
-[ -f "$DIR/scsitbgui-n32" ]  && set -- "$@" --gui65 "$DIR/scsitbgui-n32"
-# Per-OS gendist products (emitted by iris-build.sh in the same guest session
-# that compiled them) become the Software Manager dists + .tardists.
-[ -f "$DIR/inst53/irixscsitb.sw" ] && set -- "$@" --inst53-dir "$DIR/inst53"
-[ -f "$DIR/inst65/irixscsitb.sw" ] && set -- "$@" --inst65-dir "$DIR/inst65"
+for _fl in $BUILT; do
+	_k=$(flavor_dist_key "$_fl")
+	set -- "$@" "--bin$_k" "$DIR/irixscsitb-$_fl"
+	[ -f "$DIR/scsitbgui-$_fl" ] && set -- "$@" "--gui$_k" "$DIR/scsitbgui-$_fl"
+	# Per-OS gendist products (emitted by iris-build.sh in the same guest
+	# session that compiled them) become the Software Manager dists +
+	# .tardists.
+	[ -f "$DIR/inst$_k/irixscsitb.sw" ] && set -- "$@" "--inst$_k-dir" "$DIR/inst$_k"
+done
 
 exec "$REPO/scripts/package.sh" "$@"

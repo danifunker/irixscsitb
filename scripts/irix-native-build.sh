@@ -19,8 +19,12 @@
 # arithmetic, no 'local', no pipefail, NO 'pwd'/getcwd, and NO '~' (the old
 # Bourne shell doesn't expand tilde - we use $HOME).
 #
-#   ./build.sh            # portable o32/mips2 build (runs on 5.3 - 6.5)
-#   ./build.sh irix-n32   # faster 6.x-only n32 build
+#   ./build.sh              # portable o32 build for THIS cpu: o32/mips2 (runs
+#                           # on 5.3 - 6.5, R4000 and up), or o32/mips1 when
+#                           # hinv reports an R2000/R3000
+#   ./build.sh irix-o32     # force o32/mips2
+#   ./build.sh irix-mips1   # force o32/mips1 (runs on ANY MIPS CPU)
+#   ./build.sh irix-n32     # faster 6.x-only n32 build
 #   NOGUI=1 ./build.sh    # skip the Motif GUI, build only the CLI
 #   BUILDDIR=$HOME/foo ./build.sh    # override the local scratch dir
 #
@@ -54,13 +58,26 @@
 # pwd it (getcwd fails over NFS).  May be relative (e.g. "."), which is fine:
 # this shell never changes directory, so relative paths stay valid throughout.
 SRCDIR=`dirname "$0"`
-TARGET=${1:-irix-o32}
+TARGET=$1
+
+# No target named: build o32, at the ISA this machine can run. An R2000/R3000
+# refuses a mips2 binary outright ("Program not supported by architecture"),
+# so it gets mips1; everything else keeps the faster mips2 code. 5.3's grep
+# has no -q, hence the redirect.
+if [ -z "$TARGET" ]; then
+	if hinv -c processor 2>/dev/null | grep 'R[23]000' >/dev/null; then
+		TARGET=irix-mips1
+	else
+		TARGET=irix-o32
+	fi
+fi
 
 # Matching GUI target for whichever ABI was asked for.  'case' is fine in the
 # 5.3 Bourne shell; ${x/y} substitution is not.
 case "$TARGET" in
-	irix-n32) GUITARGET=irix-gui-n32 ;;
-	*)        GUITARGET=irix-gui-o32 ;;
+	irix-n32)   GUITARGET=irix-gui-n32 ;;
+	irix-mips1) GUITARGET=irix-gui-mips1 ;;
+	*)          GUITARGET=irix-gui-o32 ;;
 esac
 
 # Stable local scratch dir in home (same one every run).  ${x:-y} also covers

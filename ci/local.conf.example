@@ -6,7 +6,7 @@
 # Then no per-run arguments are needed:
 #
 #   scripts/iris-build.sh --flavor o32 --version 1.0   # one flavor
-#   scripts/release-local.sh                           # build both + publish
+#   scripts/release-local.sh                           # build all + publish
 #
 # The real ci/local.conf is .gitignore'd — personal paths and disk-image names
 # never belong in the repo (see CLAUDE.md). This .example is the only
@@ -27,7 +27,8 @@
 # — the emulator reads the disk constantly, and copy-on-write means the copy
 # stays pristine anyway (writes go to <image>.chd.diff.chd next to it).
 
-# IRIX 5.3 + IDO -> the o32 binaries (portable, run on IRIX 5.3-6.5)
+# IRIX 5.3 + IDO -> the o32/mips2 binaries (IRIX 5.3-6.5, R4000 and up) AND
+# the o32/mips1 binaries (IRIX 5.3-6.5, any MIPS CPU incl. the R3000)
 IRIX53_IMAGE=/path/to/irix53-dev.chd
 
 # IRIX 6.5 + MIPSpro -> the n32 binaries (faster, IRIX 6.x only)
@@ -40,17 +41,18 @@ IRIX65_IMAGE=/path/to/irix65-dev.chd
 #IRIX65_DISK_URL=https://example.com/private/irix65-dev.zip
 
 # ---- enable/disable a flavor -------------------------------------------------
-# Only have one of the two images? Turn the other flavor off (0/no/false/off)
-# and scripts/release-local.sh skips it; packaging adapts to what was built.
-# (In CI the same switch is the build_o32/build_n32 dispatch input or the
-# BUILD_O32/BUILD_N32 repo variable.)
+# Only have one of the two images? Turn the other image's flavors off
+# (0/no/false/off) and scripts/release-local.sh skips them; packaging adapts
+# to what was built. (In CI the same switch is the build_* dispatch input or
+# the BUILD_* repo variable.) o32 and mips1 both build from IRIX53_IMAGE.
 #BUILD_O32=1
+#BUILD_MIPS1=1
 #BUILD_N32=1
 
 # ---- Software Manager (inst/swmgr) products ----------------------------------
 # Each guest packages ITS OWN build with its own native gendist during the
-# build session (iris-build.sh): a 5.3-format product into dist53/, a
-# 6.5-format one into dist65/. Needs /usr/sbin/gendist in the guest — the
+# build session (iris-build.sh): 5.3-format products into dist53/ and
+# distmips1/, a 6.5-format one into dist65/. Needs /usr/sbin/gendist in the guest — the
 # inst_dev.sw subsystem ("Software Packager"). If your 5.3 image lacks it,
 # point this at the IRIS Development Option 5.3 CD image and
 # scripts/iris-gendist.sh installs it into the guest's disposable overlay
