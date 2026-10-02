@@ -140,13 +140,27 @@ inst_enabled() { switch_on "${BUILD_INST:-1}"; }
 # DESTDIR. One subsystem per product: each OS packages ITS OWN build with its
 # OWN gendist, so the o32 and mips1 products ship in dist53/ and distmips1/
 # (5.3 format, readable 5.3-6.5) and the n32 product in dist65/ (6.5 format).
-# All three are the same product name, so installing one replaces another.
 # idb sources point at bin/ under the gendist -sbase.
+#
+# Every flavor's subsystem also REPLACES the other flavors' subsystems. They
+# all install the same three files, and `replaces self` alone only covers the
+# same subsystem name - so installing mips1 over o32 used to leave both
+# registered, each claiming /usr/sbin/irixscsitb, and removing the stale one
+# would have deleted the working binary (seen on an R3000 Indigo, 2026-10-01).
 stage_inst_inputs() {
 	_fl="$1"; _dv="$2"; _dst="$3"
 	_abi=$(flavor_abi_desc "$_fl") || return 1
+	_repl=""
+	for _o in $FLAVORS; do
+		[ "$_o" = "$_fl" ] && continue
+		_repl="${_repl:+$_repl\n}replaces irixscsitb.sw.$_o 0 maxint"
+	done
 	sed -e "s/@VERSION@/$_dv/" -e "s/@SUBSYS@/$_fl/" -e "s|@ABI_DESC@|$_abi|" \
-		"${REPO}/inst/irixscsitb.spec" > "$_dst/irixscsitb.spec"
+		"${REPO}/inst/irixscsitb.spec" \
+	| awk -v r="$_repl" '/@REPLACES@/ {
+		sub(/@REPLACES@.*/, ""); n = split(r, l, "\\n")
+		for (i = 1; i <= n; i++) print $0 l[i]
+		next } { print }' > "$_dst/irixscsitb.spec"
 	sed -e "s/@SUBSYS@/$_fl/" \
 		"${REPO}/inst/irixscsitb.idb" > "$_dst/irixscsitb.idb"
 }

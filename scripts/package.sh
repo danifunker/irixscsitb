@@ -105,6 +105,13 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+# host_tar ARGS — tar as IRIX can read it. Plain ustar: macOS bsdtar otherwise
+# writes pax headers carrying com.apple.provenance xattrs, which IRIX's tar
+# unpacks as a junk "PaxHeader" entry (seen on an R3000 Indigo, 2026-10-01 -
+# Linux CI tars were clean, release-local.sh ones were not). COPYFILE_DISABLE
+# keeps macOS from adding ._ AppleDouble files. Both are no-ops for GNU tar.
+host_tar() { COPYFILE_DISABLE=1 tar --format=ustar "$@"; }
+
 # key_get VAR KEY — the value of ${VAR}${KEY} (BIN53, INSTmips1, ...).
 key_get() { eval "printf %s \"\${$1$2}\""; }
 
@@ -283,7 +290,7 @@ if [ "$DO_TAR" = 1 ]; then
 			chmod +x "$stage/$top/bin$k/$n"
 		done
 	done
-	tar czf "$TARBALL" -C "$stage" "$top"
+	host_tar -czf "$TARBALL" -C "$stage" "$top"
 	rm -rf "$stage"
 	echo "    contents:"; tar tzf "$TARBALL" | sed 's/^/      /'
 fi
@@ -294,7 +301,7 @@ for k in $KEYS; do
 	inst=$(key_get INST "$k")
 	[ -n "$inst" ] || continue
 	echo ">>> tardist ($k): $OUTDIR/irixscsitb-$VERSION-$k.tardist"
-	( cd "$inst" && tar cf "$OUTDIR/irixscsitb-$VERSION-$k.tardist" irixscsitb irixscsitb.idb irixscsitb.sw )
+	( cd "$inst" && host_tar -cf "$OUTDIR/irixscsitb-$VERSION-$k.tardist" irixscsitb irixscsitb.idb irixscsitb.sw )
 done
 
 # Distribution compression: the images are mostly empty space. The raw files

@@ -6,6 +6,7 @@ product irixscsitb
         subsys @SUBSYS@ default
             id "irixscsitb CLI + GUI (@ABI_DESC@)"
             replaces self
+            @REPLACES@
             exp irixscsitb.sw.@SUBSYS@
         endsubsys
     endimage
