@@ -207,6 +207,12 @@ transport between jobs, and apt packages on the runner. None of it is logic.
 script calls above; a `package` job (`package-dist.sh`); a `release` job
 (`publish-release.sh`).
 
+The `release` job is the only one that publishes, and it runs only for a
+`v*` tag push or a manual **Run workflow** with the **publish** box ticked.
+Every push to `main`, and every manual run left unticked, stops after
+`package` with the results as run artifacts — so you can build, download
+and try a candidate on hardware, then publish deliberately.
+
 Two ways to supply the images:
 
 - **Hosted runners** (default): set the `IRIX53_DISK_URL` / `IRIX65_DISK_URL`

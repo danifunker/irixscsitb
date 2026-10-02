@@ -215,7 +215,7 @@ own MIPSpro `cc` over the emulated serial console. This repo doubles as a
   `publish-release.sh`) — the YAML step bodies are one-liners.
 - **Every push to `main` is built.** The same native build and packaging run
   as a check on each push (artifacts only — a release is cut only by a `v*`
-  tag or a manual dispatch), next to a one-minute Linux `make` + `make test`
+  tag or a manual run with the **publish** box ticked), next to a one-minute Linux `make` + `make test`
   job that also runs on pull requests.
 
 ### Setup (once): `ci/local.conf`
@@ -254,7 +254,7 @@ scripts/release-local.sh                           # build all three + publish v
 
 | Mode | Where the images live | Needs |
 |---|---|---|
-| **Hosted Actions** (tag push or dispatch) | private URLs | `IRIX53_DISK_URL` + `IRIX65_DISK_URL` secrets |
+| **Hosted Actions** (tag push, or *Run workflow* with **publish** ticked) | private URLs | `IRIX53_DISK_URL` + `IRIX65_DISK_URL` secrets |
 | **Self-hosted Actions** (dispatch with `runner_label` + `irix53_image`/`irix65_image`) | on your runner | a registered runner |
 | **`scripts/release-local.sh`** | on your machine | just `gh` (`--dry-run` to rehearse, `--draft` to stage) |
 

@@ -83,14 +83,22 @@ name: Release
 #                      release.
 #   push of a v* tag   the same, then publish a GitHub release named after the
 #                      tag.
-#   workflow_dispatch  the same as a tag, versioned by the clock; the inputs
+#   workflow_dispatch  build + package, versioned by the clock; the inputs
 #                      select the runner, the images, the flavors and whether
-#                      the Software Manager products are built.
+#                      the Software Manager products are built. It publishes
+#                      a release ONLY when the "publish" box is ticked -
+#                      unticked (the default) it stops at the artifacts, like
+#                      a push to main.
 # A newer push to main cancels a build still running for an older one; tag and
 # dispatch runs are never cancelled.
 on:
   workflow_dispatch:
     inputs:
+      publish:
+        description: "Publish a GitHub release from this run (unticked = build + package only)"
+        type: boolean
+        required: false
+        default: false
       runner_label:
         description: "Runner label to build on (blank = ubuntu-latest; e.g. self-hosted)"
         required: false
@@ -314,9 +322,9 @@ jobs:
             dist/*.tardist
 
   release:
-    # Only a tag push or a manual dispatch publishes; a push to main stops at
-    # the packaged artifacts (see WHEN IT RUNS at the top).
-    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    # Only a tag push, or a manual dispatch with "publish" ticked, publishes;
+    # everything else stops at the packaged artifacts (see WHEN IT RUNS).
+    if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.publish)
     needs: [version, build-native, package]
     runs-on: ubuntu-latest
     steps:

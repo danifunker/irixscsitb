@@ -284,8 +284,9 @@ matrixed `build-native` job, prebuilt emulator binaries via
 `scripts/fetch-iris.sh` (no Rust toolchain in CI) — then packages and cuts the
 release. **It runs on every push to `main`** as a build-and-package check
 (artifacts only; a newer push cancels an older run) and publishes a release
-only on a `v*` tag push or a manual dispatch — the `release` job is gated on
-the event. `build.yaml` is the one-minute Linux `make` + `make test` check on
+only on a `v*` tag push or a manual dispatch with the **`publish`** box
+ticked (default off, so a dispatch is a build-and-package check unless asked)
+— the `release` job is gated on exactly that. `build.yaml` is the one-minute Linux `make` + `make test` check on
 the same pushes and on pull requests. Hosted mode needs the secrets **`IRIX53_DISK_URL`** and
 **`IRIX65_DISK_URL`** (installed boot disks, bare `.chd` or a `.zip` with one;
 licensed IRIX — host them privately); downloads are cached keyed on the guest
